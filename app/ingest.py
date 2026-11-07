@@ -6,6 +6,7 @@ gli esami con data nel nome del file (YYYY_MM...) precedenti vengono esclusi se 
 I file non vengono mai cancellati."""
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from .models import Chunk
@@ -65,8 +66,17 @@ def course_config(course_dir: str) -> dict:
 
 
 def exam_date(name: str) -> str | None:
+    """Data "YYYY-MM" dal nome del file d'esame. Formati: YYYY_MM_..., YYYYMMDD, DDMMYY (es. 040723 = 4/7/2023)."""
     m = DATE_RE.match(name)
-    return f"{m.group(1)}-{int(m.group(2)):02d}" if m else None
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})(?!\d)", name)
+    if m and m.group(1).startswith(("19", "20")) and 1 <= int(m.group(2)) <= 12 and 1 <= int(m.group(3)) <= 31:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.match(r"^(\d{2})(\d{2})(\d{2})(?!\d)", name)
+    if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+        return f"20{m.group(3)}-{m.group(2)}"
+    return None
 
 
 def course_path(course: str) -> Path:
@@ -80,6 +90,7 @@ def list_courses(root: str | Path = DATA_DIR) -> list[str]:
         return any(
             f.is_file() and f.suffix.lower() in supported
             and "materials_update_bench" not in f.parts
+            and "new_slides" not in f.parts
             and f.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}
             for f in p.rglob("*")
         )
@@ -89,28 +100,54 @@ def list_courses(root: str | Path = DATA_DIR) -> list[str]:
     return sorted(p.name for p in root.iterdir() if p.is_dir() and has_material(p))
 
 
-def load_course(course_dir: str, exams_from: str | None = None) -> list[Chunk]:
+def load_course(
+    course_dir: str | Path,
+    exams_from: str | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> list[Chunk]:
     """`exams_from` ("YYYY-MM"): esclude gli esami più vecchi, se la data è nel nome del file."""
     base = Path(course_dir)
     chunks: list[Chunk] = []
+    files_to_load = [
+        (folder, file)
+        for folder in ("slides", "exercises", "exams")
+        for file in sorted((base / folder).glob("*"))
+        if file.suffix.lower() in {".pdf", ".md"}
+        and not (folder == "exams" and exams_from and (date := exam_date(file.name)) and date < exams_from)
+    ]
+    total_files = len(files_to_load)
+    loaded_files = 0
+
+    def report_file(folder: str, file: Path) -> None:
+        nonlocal loaded_files
+        loaded_files += 1
+        if on_progress:
+            on_progress(loaded_files, total_files, f"{folder}/{file.name}")
+
+    if on_progress:
+        on_progress(0, total_files, "Preparazione caricamento")
     for f in sorted((base / "slides").glob("*")):
         if f.suffix.lower() == ".pdf":
             for i, page in enumerate(_pdf_pages(f)):
                 if page.strip():
                     chunks.append(Chunk(id=f"slides/{f.name}#{i}", source="slide", ref=f"{f.stem} p.{i + 1}", text=page))
+            report_file("slides", f)
         elif f.suffix.lower() == ".md":
             for i, block in enumerate(_md_blocks(f, exam=False)):
                 chunks.append(Chunk(id=f"slides/{f.name}#{i}", source="slide", ref=f"{f.stem} slide {i + 1}", text=block))
+            report_file("slides", f)
     for f in sorted((base / "exercises").glob("*")):  # esercitazioni (facoltative)
         if f.suffix.lower() == ".pdf":
             for i, page in enumerate(_pdf_pages(f)):
                 if page.strip():
                     chunks.append(Chunk(id=f"exercises/{f.name}#{i}", source="exercise",
                                         ref=f"{f.stem} p.{i + 1}", text=page))
+            report_file("exercises", f)
         elif f.suffix.lower() == ".md":
             for i, block in enumerate(_md_blocks(f, exam=False)):
                 chunks.append(Chunk(id=f"exercises/{f.name}#{i}", source="exercise",
                                     ref=f"{f.stem}, esercizio {i + 1}", text=block))
+            report_file("exercises", f)
     for f in sorted((base / "exams").glob("*")):
         d = exam_date(f.name)
         if exams_from and d and d < exams_from:
@@ -121,6 +158,7 @@ def load_course(course_dir: str, exams_from: str | None = None) -> list[Chunk]:
                 if page.strip():
                     chunks.append(Chunk(id=f"exams/{f.name}#{i}", source="exam", ref=f"{f.stem} p.{i + 1}",
                                         text=page, points=pts))
+            report_file("exams", f)
         elif f.suffix.lower() == ".md":
             for i, block in enumerate(_md_blocks(f, exam=True)):
                 if block.startswith("# "):  # intestazione del tema d'esame, non un esercizio
@@ -129,4 +167,7 @@ def load_course(course_dir: str, exams_from: str | None = None) -> list[Chunk]:
                 pts = float(m.group(1).replace(",", ".")) if m else 1.0
                 chunks.append(Chunk(id=f"exams/{f.name}#{i}", source="exam",
                                     ref=f"{f.stem}, esercizio {i}", text=block, points=pts))
+            report_file("exams", f)
+    if on_progress:
+        on_progress(total_files, total_files, "Caricamento completato")
     return chunks

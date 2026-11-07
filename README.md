@@ -34,23 +34,34 @@ Poi nel browser:
 
 **Senza chiave OpenAI** l'app funziona lo stesso in modalità offline. Usa risposte di riserva deterministiche e un embedding locale. Per forzarla anche con la chiave basta `OFFLINE=1`.
 
-Test: `OFFLINE=1 python -m pytest -q`. `test_offline_concepts_on_example_course` fallisce perché il corso d'esempio `data/esempio-poo` non è più nella repo.
+Test: `OFFLINE=1 python -m pytest -q` (tutti verdi; `data/esempio-poo/` è di nuovo nella repo come corso di prova offline).
 
 ### Variabili d'ambiente
 
 | Variabile | Default | A cosa serve |
 |---|---|---|
 | `OPENAI_API_KEY` | — | Senza questa chiave l'app gira offline |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Modello per tutte le chiamate di testo (JSON mode) |
+| `OPENAI_MODEL` | `gpt-6-luna` (il modello degli organizzatori) | Modello per tutte le chiamate di testo (JSON mode) |
 | `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding per il RAG |
 | `OFFLINE` | — | Con `1` forza la modalità offline |
 | `CACHE_DIR` | `.cache` | Cache su disco delle risposte LLM e degli embedding |
 
 Le risposte dell'LLM vengono salvate in `.cache/`. Se si fa un giro completo online prima della presentazione, la demo funziona anche senza rete.
 
+## Script della demo ("The Lazy Prof", ADR 0007)
+
+1. **Professore → scegli il corso → Carica corso.** Il filtro "Usa solo gli esami dal …" esclude gli appelli su un'architettura diversa da quella delle slide.
+2. **Creatore di survey**: scegli una lezione, "Crea survey per questa lezione", poi Approva/Scarta le varianti (ADR 0003). Senza varianti approvate non si misura nulla.
+3. **Diagnosi transfer gap**: "Simula una classe di 20 studenti" e mostra il transfer gap per concetto (tipiche contro varianti) e la distanza insegnato ↔ testato.
+4. **Revisore esami**: esercizi d'esame ricalcabili dagli appelli vecchi o su un'architettura diversa dalle slide, con il confronto prima/dopo. Le motivazioni citano il transfer gap della Diagnosi.
+5. **Revisore materiali**: "Ammoderna" rinnova le slide PPTX in `data/<corso>/new_slides/` (ignorata da git), poi micro-modifiche da approvare.
+6. **Studente**: risponde alla coppia tipica + variante di una survey approvata e riceve un feedback che guida senza dare la soluzione.
+
+Formati dei nomi d'esame riconosciuti per la data: `YYYY_MM_DD`, `YYYYMMDD`, `DDMMYY` (es. `040723.pdf` = luglio 2023).
+
 ## Modelli e librerie
 
-- **OpenAI** `gpt-4o-mini` in JSON mode (`response_format=json_object`, temperatura 0.4, un retry) e `text-embedding-3-small`. Tutte le chiamate passano da `app/llm.py`.
+- **OpenAI** `gpt-6-luna` in JSON mode (`response_format=json_object`, temperatura 0.4, ripetuta senza temperatura se il modello la rifiuta) e `text-embedding-3-small`. Tutte le chiamate passano da `app/llm.py`.
 - **Streamlit**: l'interfaccia.
 - **pypdf** e **PyMuPDF**: testo dai PDF, anteprime e PDF modificati. **python-pptx** e **python-docx**: lettura e riscrittura di PPTX e DOCX.
 - **NumPy** e **pandas**: similarità coseno del RAG e tabelle.
@@ -62,7 +73,7 @@ Le parti che non sono "chiedi all'LLM", e che quindi rendono i risultati verific
 
 - **Somiglianza tra esami** (`app/exam_review.py`). Ogni domanda d'esame recente viene confrontata con tutte quelle degli appelli precedenti misurando le parole in comune (indice di Jaccard), dopo aver tolto le intestazioni (nome, matricola, tempo, istruzioni). Sopra 0.35 la domanda conta come "già vista". La **prevedibilità** è la quota dei punti d'esame che sta su domande già viste. È deterministica e il docente può controllarla.
 - **Architettura insegnata contro architettura esaminata** (`app/exam_review.py`). Conta i marcatori di x86, MIPS e RISC-V nelle slide e in ogni tema d'esame e segnala i periodi in cui non coincidono.
-- **Lettura degli esami** (`app/ingest.py`). Ogni pagina di un PDF d'esame diventa un blocco, citato come `<file> p.N`. I punti si stimano dalla sezione: risposta chiusa 1, risposta aperta 5, "sino a N punti" vale N. La PR #14, ancora aperta, divide gli esami in singole domande; l'agente esami funziona con entrambe le versioni.
+- **Lettura degli esami** (`app/ingest.py`). Ogni pagina di un PDF d'esame diventa un blocco, citato come `<file> p.N`. I punti si stimano dalla sezione: risposta chiusa 1, risposta aperta 5, "sino a N punti" vale N. Il RAG indicizza ogni domanda d'esame come un blocco a sé, con una soglia di pertinenza.
 - **RAG leggero** (`app/rag.py`). Embedding in memoria e similarità coseno. Ogni proposta cita le slide da cui viene.
 - **Modalità offline coerente** (`app/llm.py`). Ogni chiamata ha una risposta di riserva. Se un embedding fallisce, tutto passa a offline, così vettori di dimensioni diverse non si mescolano mai.
 - **Il docente decide sempre.** Ogni proposta nasce `pending`. I file originali non vengono mai toccati: il Revisore materiali scrive solo in `new_slides/`, e solo dopo un'approvazione.
@@ -71,7 +82,7 @@ Le parti che non sono "chiedi all'LLM", e che quindi rendono i risultati verific
 
 ```
 app.py                     avvio Streamlit (registra il pacchetto app/ e lancia streamlit_app.py)
-streamlit_app.py           interfaccia: area Professore (3 agenti) e area Studente
+streamlit_app.py           interfaccia: area Professore (Diagnosi transfer gap + 3 agenti) e area Studente
 app/
   ingest.py                lettura dei corsi da data/<corso>/ e divisione in blocchi (Chunk)
   llm.py                   unico accesso a OpenAI, cache e modalità offline
@@ -82,8 +93,8 @@ app/
   materials_update.py                              Revisore materiali
   exercises.py, grading.py                         Creatore di survey e correzione
   agents/, orchestrator.py  interfaccia comune degli agenti e avvio in parallelo (ADR 0006)
-  metrics.py, insights.py, simulate.py, practice.py, material_review.py, lessons.py
-                            moduli della sonda di transfer: testati ma non ancora collegati all'interfaccia
+  metrics.py, simulate.py, lessons.py                transfer gap e classe simulata (Diagnosi, ADR 0007)
+  insights.py, practice.py, material_review.py      testati ma non ancora collegati all'interfaccia
 data/<corso>/              slides/, exams/, program/, expected_results/, config.json (facoltativo)
 docs/                      architettura, esempi, ADR, handover
 tests/                     test pytest, tutti offline

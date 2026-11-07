@@ -113,3 +113,35 @@ def test_dotenv_does_not_override(tmp_path, monkeypatch):
     import os
     assert os.environ["OPENAI_MODEL"] == "gpt-test" and os.environ["FOO_X"] == "1"
     assert os.environ["OPENAI_API_KEY"] == "gia-impostata"
+
+
+def test_exam_date_real_filenames():
+    # Progettazione elettronica digitale: DDMMYY e YYYYMMDD; Calcolatori: YYYY_MM_DD
+    assert exam_date("040723.pdf") == "2023-07"
+    assert exam_date("190621.pdf") == "2021-06"
+    assert exam_date("220121.pdf") == "2021-01"
+    assert exam_date("20210707.pdf") == "2021-07"
+    assert exam_date("2019_02_14.pdf") == "2019-02"
+
+
+def test_evidence_without_answers_is_not_zero_gap():
+    from app.agents.base import evidence
+    from app.models import ConceptMetrics
+    s = evidence(ConceptMetrics("c", 0.0, 0.0, 0.0, 0.3, 0.1))
+    assert "nessuna risposta" in s and "+0%" not in s
+    assert "+40%" in evidence(ConceptMetrics("c", 0.8, 0.4, 0.4, 0.3, 0.1))
+    one_side = evidence(ConceptMetrics("c", 0.58, 0.0, 0.0, 0.3, 0.1))  # tipiche sì, varianti non ancora
+    assert "nessuna risposta alle varianti" in one_side and "+0%" not in one_side
+
+
+def test_materials_update_reads_program_and_only_slides(tmp_path):
+    from app.materials_update import prepare_materials
+    (tmp_path / "slides").mkdir(); (tmp_path / "exams").mkdir()
+    (tmp_path / "program").mkdir(); (tmp_path / "expected_results").mkdir()
+    (tmp_path / "slides" / "lezione1.md").write_text("# Titolo\nContenuto", encoding="utf-8")
+    (tmp_path / "exams" / "040723.md").write_text("## Esercizio 1 (5 punti)\nTesto", encoding="utf-8")
+    (tmp_path / "program" / "program.txt").write_text("Programma del corso", encoding="utf-8")
+    (tmp_path / "expected_results" / "expected_results.txt").write_text("Risultati attesi", encoding="utf-8")
+    pkg = prepare_materials(tmp_path)
+    assert pkg.syllabus == "Programma del corso" and pkg.expected == "Risultati attesi"
+    assert pkg.lessons == []  # solo PPTX in slides/: niente esami né markdown
