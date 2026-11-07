@@ -248,7 +248,8 @@ def render_diagnosis():
         st.caption("Nessuna risposta ancora: simula la classe o fai rispondere gli studenti dall'Area studente.")
         return
     names = {c.id: c.name for c in S.get("concepts", [])}
-    ms = [m for m in concept_metrics(S.concepts, S.chunks, S.exercises, answers) if m.typical_score or m.variant_score]
+    all_ms = concept_metrics(S.concepts, S.chunks, S.exercises, answers)
+    ms = [m for m in all_ms if m.typical_score or m.variant_score]
     if not ms:
         st.caption("Le risposte non riguardano ancora nessun concetto con survey approvate.")
         return
@@ -259,10 +260,11 @@ def render_diagnosis():
     worst = df.sort_values("Transfer gap", ascending=False).iloc[0]
     a.metric("Gap più alto", f"{worst['Transfer gap']:+.0%}", worst["Concetto"])
     b.metric("Risposte", len(answers))
-    c.metric("Distanza insegnato ↔ testato", f"{coverage_distance(ms):.0%}")
+    c.metric("Distanza insegnato ↔ testato", f"{coverage_distance(all_ms):.0%}")
     st.bar_chart(df.set_index("Concetto")[["Tipiche", "Varianti"]], stack=False)
     st.dataframe(df.style.format({k: "{:.0%}" for k in df.columns if k != "Concetto"}), hide_index=True)
-    st.caption("Il Revisore esami usa queste stesse risposte nelle sue motivazioni.")
+    st.caption("La distanza insegnato ↔ testato è calcolata su tutti i concetti; il gap solo su quelli con risposte. "
+               "Il Revisore esami usa queste stesse risposte nelle sue motivazioni.")
 
 
 def render_student():
