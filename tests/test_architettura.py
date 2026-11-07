@@ -144,4 +144,19 @@ def test_materials_update_reads_program_and_only_slides(tmp_path):
     (tmp_path / "expected_results" / "expected_results.txt").write_text("Risultati attesi", encoding="utf-8")
     pkg = prepare_materials(tmp_path)
     assert pkg.syllabus == "Programma del corso" and pkg.expected == "Risultati attesi"
-    assert pkg.lessons == []  # solo PPTX in slides/: niente esami né markdown
+    assert pkg.lessons == []  # solo PPTX e PDF in slides/: niente esami né markdown
+
+
+def test_materials_update_reads_and_modernizes_pdf_slides(tmp_path):
+    import shutil
+    from pathlib import Path
+    from app.materials_update import modernize_materials, prepare_materials
+    src = Path("data/progettazione-elettronica-digitale/slides/[01] L01-intro-circuiti.pdf")
+    (tmp_path / "slides").mkdir()
+    shutil.copy(src, tmp_path / "slides" / src.name)
+    pkg = prepare_materials(tmp_path)
+    assert len(pkg.lessons) == 1 and pkg.lessons[0].source_format == "pdf"
+    assert len(pkg.lessons[0].slides) > 1 and any(s.text.strip() for s in pkg.lessons[0].slides)
+    modernize_materials(pkg)
+    assert Path(pkg.lessons[0].bench_path).is_file()
+    assert (tmp_path / "slides" / src.name).read_bytes() == src.read_bytes()  # l'originale non si tocca

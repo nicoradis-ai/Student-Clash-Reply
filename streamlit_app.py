@@ -160,7 +160,7 @@ def render_exam_reviewer(course: str, exams_from: str | None):
 
 def render_materials_update(course: str):
     st.subheader("Revisore materiali")
-    st.write("Analizza e ricrea esclusivamente i PPTX in slides/. Testo e immagini restano quelli originali; cambia solo il design standardizzato.")
+    st.write("Analizza i PPTX e i PDF in slides/. Testo e immagini restano quelli originali: i PPTX vengono ricreati con un design standardizzato, i PDF ricevono una cornice uniforme.")
     selected_root = Path(course_path(course))
     root = selected_root
     st.caption(f"Cartella sorgente: {root / 'slides'}")
@@ -174,7 +174,7 @@ def render_materials_update(course: str):
             analysis_bar.progress(percent, text=f"Analisi materiali: {current}/{total} file")
             analysis_detail.caption(f"Materiale corrente: {item}")
 
-        with st.spinner("Analizzo i PPTX in slides/ senza creare file di output…"):
+        with st.spinner("Analizzo PPTX e PDF in slides/ senza creare file di output…"):
             S.materials_package = prepare_materials(root, on_progress=update_material_analysis)
             S.material_changes = {}
             analysis_bar.progress(100, text="Analisi materiali completata")
@@ -188,10 +188,10 @@ def render_materials_update(course: str):
         st.info("Avvia la preparazione per leggere le presentazioni e i documenti del corso.")
         return
     if not package.lessons:
-        st.warning("Non ho trovato file PPTX nella cartella slides/ del corso selezionato.")
+        st.warning("Non ho trovato file PPTX o PDF nella cartella slides/ del corso selezionato.")
         return
 
-    st.success(f"{len(package.lessons)} presentazioni in slides/ analizzate in memoria. Nessun file è stato creato o modificato.")
+    st.success(f"{len(package.lessons)} materiali in slides/ analizzati in memoria. Nessun file è stato creato o modificato.")
     if st.button("Ammoderna il design e crea new_slides", type="primary"):
         restyle_bar = st.progress(0, text="Ricostruzione slide: 0/0 · 0%")
         restyle_detail = st.empty()
@@ -213,12 +213,12 @@ def render_materials_update(course: str):
         st.markdown(f"- {topic}")
     modernized = Path(lesson.bench_path).is_file()
     if modernized:
-        label = "Scarica PPTX ricreato"
+        label = "Scarica PDF modernizzato" if lesson.source_format == "pdf" else "Scarica PPTX ricreato"
         st.download_button(label, Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
     else:
         st.caption("Le proposte non generano file. Per creare l'output, usa il pulsante di ammodernamento.")
 
-    unit_name = "Slide"
+    unit_name = "Pagina" if lesson.source_format == "pdf" else "Slide"
     slide = st.selectbox(unit_name, lesson.slides, format_func=lambda item: f"{unit_name} {item.number}: {item.title or 'senza titolo'}")
     with st.expander("Testo estratto"):
         st.text(slide.text)
