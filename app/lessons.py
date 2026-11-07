@@ -1,5 +1,6 @@
 """Panoramica delle lezioni e proposte di correzione slide-per-slide."""
 import re
+from collections.abc import Callable
 from pathlib import PurePosixPath
 
 from .llm import chat_json
@@ -49,7 +50,10 @@ def _offline_subtopics(chunks: list[Chunk]) -> list[str]:
     return [f"Contenuti della slide {i + 1}" for i in range(len(chunks))]
 
 
-def build_lessons(chunks: list[Chunk]) -> list[Lesson]:
+def build_lessons(
+    chunks: list[Chunk],
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> list[Lesson]:
     """Raggruppa tutte le slide per file e crea l'overview di ogni lezione."""
     grouped: dict[str, list[Chunk]] = {}
     for chunk in chunks:
@@ -57,7 +61,10 @@ def build_lessons(chunks: list[Chunk]) -> list[Lesson]:
             grouped.setdefault(_file_of(chunk), []).append(chunk)
 
     lessons = []
-    for source_file, slides in grouped.items():
+    total_lessons = len(grouped)
+    if on_progress:
+        on_progress(0, total_lessons, "Preparazione panoramica lezioni")
+    for position, (source_file, slides) in enumerate(grouped.items(), 1):
         material = "\n\n".join(f"[{s.ref}]\n{s.text}" for s in slides)
         data = chat_json(LESSON_SYSTEM, material, lambda slides=slides: {
             "subtopics": _offline_subtopics(slides)
@@ -70,6 +77,10 @@ def build_lessons(chunks: list[Chunk]) -> list[Lesson]:
             slide_ids=[s.id for s in slides],
             subtopics=list(dict.fromkeys(subtopics)) or _offline_subtopics(slides),
         ))
+        if on_progress:
+            on_progress(position, total_lessons, _title(source_file))
+    if on_progress:
+        on_progress(total_lessons, total_lessons, "Panoramica lezioni completata")
     return lessons
 
 

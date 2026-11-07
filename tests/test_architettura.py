@@ -144,4 +144,4 @@ def test_materials_update_reads_program_and_only_slides(tmp_path):
     (tmp_path / "expected_results" / "expected_results.txt").write_text("Risultati attesi", encoding="utf-8")
     pkg = prepare_materials(tmp_path)
     assert pkg.syllabus == "Programma del corso" and pkg.expected == "Risultati attesi"
-    assert [l.name for l in pkg.lessons] == ["lezione1"] or len(pkg.lessons) == 1
+    assert pkg.lessons == []  # solo PPTX in slides/: niente esami né markdown
