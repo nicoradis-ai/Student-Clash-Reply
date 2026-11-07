@@ -31,3 +31,19 @@ def test_exam_on_other_isa_than_slides_is_a_mismatch():
     mm = coverage_mismatches(chunks)
     assert [(m.exam_file, m.exam_isa, m.slides_isa) for m in mm] == [("2020_02_11.pdf", "MIPS", "RISC-V")]
     assert mismatch_periods(mm) == ["Esami 2020-02 → 2020-02 (1 appelli): usano MIPS, le slide insegnano RISC-V."]
+
+
+def test_agent_turns_repeated_exercise_into_proposal(monkeypatch):
+    from app.agents.base import CourseContext
+    from app.agents.esami import EsamiAgent
+    from app.models import Concept, ConceptMetrics
+    from app.rag import Index
+    monkeypatch.setenv("OFFLINE", "1")
+    chunks = [Chunk("slides/c.pdf#0", "slide", "c p.1", "Memorie cache direct mapped: linee, tag, hit e miss"),
+              _exam("2020_07_01.pdf", 0, CACHE.format(n=64)), _exam("2024_07_02.pdf", 0, CACHE.format(n=128))]
+    ctx = CourseContext(chunks=chunks, index=Index(chunks),
+                        concepts=[Concept("cache", "Memorie cache", "cache", []), Concept("bus", "Bus", "bus", [])],
+                        metrics=[ConceptMetrics("cache", .8, .4, .4, .3, .6), ConceptMetrics("bus", .7, .7, 0, .2, .1)])
+    props = EsamiAgent().run(ctx)
+    assert [(p.concept_id, p.target_ref) for p in props] == [("cache", "2024_07_02 p.1")]
+    assert "2020_07_01" in props[0].rationale and props[0].change
