@@ -507,17 +507,20 @@ def preview_change(lesson: LessonAsset, slide: SlideAsset, change: MicroChange) 
     )
 
 
+SLIDE_FORMATS = {".pptx", ".pdf"}
+
+
 def prepare_materials(
     data_dir: str | Path,
     output_dir: str | Path | None = None,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> MaterialsPackage:
-    """Analizza esclusivamente le presentazioni PPTX presenti in ``data_dir/slides``."""
+    """Analizza le presentazioni PPTX e i PDF presenti in ``data_dir/slides``."""
     root = Path(data_dir)
     slides_dir = root / "slides"
     output = Path(output_dir) if output_dir else root / "new_slides"
     files = sorted(
-        (path for path in slides_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".pptx"),
+        (path for path in slides_dir.rglob("*") if path.is_file() and path.suffix.lower() in SLIDE_FORMATS),
         key=_sort_key,
     ) if slides_dir.is_dir() else []
     syllabus = _read_first(root, ("program.txt", "programma.txt", "syllabus.md"))
@@ -527,7 +530,7 @@ def prepare_materials(
     if on_progress:
         on_progress(0, total_files, "Preparazione analisi")
     for position, source in enumerate(files, 1):
-        source_assets = _extract_presentation(source)
+        source_assets = _extract_presentation(source) if source.suffix.lower() == ".pptx" else _extract_document(source)
         if not source_assets:
             if on_progress:
                 on_progress(position, total_files, source.name)
@@ -553,10 +556,10 @@ def modernize_materials(
     package: MaterialsPackage,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> None:
-    """Ricrea solo i PPTX di ``slides`` in ``new_slides``, una slide alla volta."""
+    """Ricrea i PPTX di ``slides`` in ``new_slides`` una slide alla volta; ai PDF applica la cornice uniforme."""
     output = Path(package.data_dir) / "new_slides"
     output.mkdir(parents=True, exist_ok=True)
-    ppt_lessons = [lesson for lesson in package.lessons if lesson.source_format == "pptx"]
+    ppt_lessons = [lesson for lesson in package.lessons if lesson.source_format in {"pptx", "pdf"}]
     total_slides = sum(len(lesson.slides) for lesson in ppt_lessons)
     completed_slides = 0
     if on_progress:
@@ -575,7 +578,12 @@ def modernize_materials(
                     f"{source.name} · slide {asset.number}/{len(lesson.slides)}",
                 )
 
-        _modernize(source, destination, lesson.slides, on_slide=report_slide)
+        if lesson.source_format == "pdf":
+            _modernize_pdf(source, destination)
+            for asset in lesson.slides:
+                report_slide(asset)
+        else:
+            _modernize(source, destination, lesson.slides, on_slide=report_slide)
         lesson.bench_path = str(destination)
     package.output_dir = str(output)
     if on_progress:
