@@ -12,3 +12,5 @@ Implementa `app/simulate.py` e `app/metrics.py`.
 - Se il materiale di Luca non arriva entro le 13:30, preparare un mini corso fittizio in `data/esempio/` (5–6 slide, 2 temi d'esame).
 
 ## Comments
+
+- 2026-11-07 (Claude): c'è già una prima versione funzionante (PR "Scheletro funzionante"), anche offline. Il ticket ora è: migliorare la propria parte, prompt e qualità, senza cambiare le firme delle funzioni.

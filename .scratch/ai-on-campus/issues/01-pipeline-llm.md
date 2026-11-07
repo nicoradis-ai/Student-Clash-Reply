@@ -13,3 +13,5 @@ Implementa `app/llm.py`, `app/ingest.py`, `app/rag.py`, `app/concepts.py`, `app/
 - Ogni `Misalignment` ha tutti e tre i suggerimenti compilati.
 
 ## Comments
+
+- 2026-11-07 (Claude): c'è già una prima versione funzionante (PR "Scheletro funzionante"), anche offline. Il ticket ora è: migliorare la propria parte, prompt e qualità, senza cambiare le firme delle funzioni.

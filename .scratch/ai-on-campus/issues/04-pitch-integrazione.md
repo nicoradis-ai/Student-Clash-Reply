@@ -11,3 +11,5 @@ Owner: D
 - Prova completa del ciclo almeno 30 minuti prima della consegna, con la cache già popolata.
 
 ## Comments
+
+- 2026-11-07 (Claude): README con avvio e script della demo già scritto; da rivedere e provare online con la chiave.

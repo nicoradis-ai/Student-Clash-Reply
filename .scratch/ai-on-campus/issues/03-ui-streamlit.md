@@ -11,3 +11,5 @@ Implementa `streamlit_app.py`. Finché i ticket 01 e 02 non sono pronti, lavora 
 - Avviso visibile quando gira in modalità offline/cache.
 
 ## Comments
+
+- 2026-11-07 (Claude): c'è già una prima versione funzionante (PR "Scheletro funzionante"), anche offline. Il ticket ora è: migliorare la propria parte, prompt e qualità, senza cambiare le firme delle funzioni.
