@@ -7,7 +7,7 @@ from typing import Literal
 class Chunk:
     """Un pezzo di materiale del corso, indicizzato per il RAG."""
     id: str                      # es. "slides/03.md#2"
-    source: Literal["slide", "exam"]
+    source: Literal["slide", "exercise", "exam"]   # exercise = esercitazioni
     ref: str                     # citazione leggibile, es. "Slide 12" o "Esame 2024-06, es. 2"
     text: str
     points: float = 0.0          # solo per i temi d'esame: punti dell'esercizio
@@ -82,3 +82,23 @@ class Misalignment:
     suggestion_exam: str         # esercizio d'esame
     suggestion_student: str      # cosa ripassare
     sources: list[str] = field(default_factory=list)
+
+
+AgentName = Literal["materiale", "esercitazioni", "esami"]
+
+
+@dataclass
+class Proposal:
+    """Una proposta di modifica prodotta da uno dei tre agenti (ADR 0006).
+
+    Ogni proposta parte da un concetto con transfer gap alto: dice cosa cambiare, dove, e perché
+    i dati lo giustificano. Il docente la approva o la scarta, come le varianti (ADR 0003)."""
+    agent: AgentName
+    concept_id: str
+    target_ref: str              # dove intervenire, es. "04 - RISC V p.12" o "2024_07_18 p.2"
+    problem: str                 # cosa non va, legato al gap: "le slide mostrano solo la procedura"
+    change: str                  # la modifica concreta proposta (testo da aggiungere/sostituire)
+    rationale: str               # il dato che la giustifica, es. "gap +38%: tipici 82%, varianti 44%"
+    sources: list[str] = field(default_factory=list)   # chunk ids citati
+    priority: float = 0.0        # più alto = più urgente; di default il transfer gap del concetto
+    status: Literal["pending", "approved", "rejected"] = "pending"

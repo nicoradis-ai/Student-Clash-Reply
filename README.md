@@ -32,3 +32,16 @@ Se OpenAI non risponde, l'app usa le risposte di riserva e lo dice in rosso nell
 5. **Studente**: rispondi a una variante, ricevi un feedback che guida senza dare la soluzione e vedi cosa ripassare.
 
 Le risposte dell'LLM sono salvate in `.cache/`: fai un giro completo online prima della presentazione e la demo regge anche senza rete.
+
+
+## Architettura a tre agenti (ADR 0006)
+
+```
+app/agents/base.py           CourseContext, Proposal, interfaccia Agent, ctx.focus()
+app/agents/materiale.py      Agente 1 · revisione slide
+app/agents/esercitazioni.py  Agente 2 · allineamento esercitazioni (cartella exercises/ del corso)
+app/agents/esami.py          Agente 3 · revisione esami
+app/orchestrator.py          build_context() + run_agents() in parallelo
+```
+
+Flusso docente: 1 · Diagnosi (transfer gap per concetto) → 2 · Tre agenti → 3 · Piano approvato.

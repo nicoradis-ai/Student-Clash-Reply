@@ -1,4 +1,4 @@
-"""Demo AI on Campus – sonda di transfer. Avvio: streamlit run streamlit_app.py"""
+"""Demo AI on Campus – sonda di transfer + tre agenti (ADR 0006). Avvio: streamlit run streamlit_app.py"""
 import pandas as pd
 import streamlit as st
 
@@ -8,8 +8,9 @@ from app.exercises import make_pair
 from app.grading import grade
 from app import ingest
 from app.ingest import course_config, course_path, list_courses, load_course
-from app.insights import misalignments, study_advice
-from app.lessons import build_lessons, review_slides
+from app.agents import AGENTS, evidence
+from app.insights import study_advice
+from app.orchestrator import build_context, run_agents
 from app.metrics import concept_metrics, coverage_distance
 from app.rag import Index
 from app.simulate import simulate_class
@@ -43,22 +44,19 @@ key = (course, exams_from)
 if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
     with st.status("Carico il materiale del corso…", expanded=True) as box:
         ingest.WARNINGS.clear()
-        st.write("1/4 · Leggo slide ed esami (con molti PDF serve circa mezzo minuto)…")
+        st.write("1/3 · Leggo slide, esercitazioni ed esami (con molti PDF serve circa mezzo minuto)…")
         S.chunks = _load(course, exams_from)
         # Se una vecchia cache contiene il risultato vuoto ottenuto senza pypdf,
         # riprova senza cache dopo l'installazione della dipendenza.
         if not S.chunks:
             S.chunks = load_course(course_path(course), exams_from)
-        n_s = sum(c.source == "slide" for c in S.chunks)
-        st.write(f"{n_s} pagine di slide, {len(S.chunks) - n_s} pagine d'esame.")
-        st.write("2/4 · Costruisco l'indice di ricerca (embedding)…")
+        n = {k: sum(c.source == k for c in S.chunks) for k in ("slide", "exercise", "exam")}
+        st.write(f"{n['slide']} pagine di slide, {n['exercise']} di esercitazioni, {n['exam']} d'esame.")
+        st.write("2/3 · Costruisco l'indice di ricerca (embedding)…")
         S.index = Index(S.chunks)
-        st.write("3/4 · Costruisco l'overview di tutte le lezioni…")
-        S.lessons = build_lessons(S.chunks)
-        st.write("4/4 · Estraggo la mappa dei concetti…")
+        st.write("3/3 · Estraggo la mappa dei concetti…")
         S.concepts = extract_concepts(S.chunks)
-        S.exercises, S.answers, S.live_answers, S.mis = [], [], [], None
-        S.slide_corrections = []
+        S.exercises, S.answers, S.live_answers, S.proposals, S.agent_errors = [], [], [], {}, {}
         S.key = key
         ok = bool(S.chunks and S.concepts)
         box.update(label=f"Materiale caricato: {len(S.chunks)} blocchi, {len(S.concepts)} concetti" if ok
@@ -93,102 +91,108 @@ def all_answers():
 
 # ---------- vista docente ----------
 if view == "Docente":
-    t1, t2, t3, t4, t5, t6 = st.tabs(["1 · Lezioni", "2 · Correzioni slide", "3 · Mappa dei concetti",
-                                      "4 · Varianti da approvare", "5 · Classe e metriche", "6 · Disallineamenti"])
+    st.title("Gli studenti sanno risolvere l'esame, ma hanno capito il corso?")
+    st.write("Per ogni concetto confrontiamo il punteggio su un **esercizio tipico** (la forma solita d'esame) e su una "
+             "**variante** (stesso concetto, forma nuova). La differenza è il **transfer gap**: dove è alto, gli studenti "
+             "hanno imparato lo schema e non il concetto. Tre agenti lavorano poi in parallelo sui concetti peggiori: "
+             "materiale, esercitazioni, esami.")
+    t1, t2, t3 = st.tabs(["1 · Diagnosi: dove si impara lo schema", "2 · Tre agenti al lavoro", "3 · Piano approvato"])
 
     with t1:
-        st.write("Ogni file di slide/PDF è trattato come una lezione. Qui trovi tutti i sottoargomenti individuati.")
-        for lesson in S.get("lessons", []):
-            with st.container(border=True):
-                st.markdown(f"### {lesson.title}")
-                st.caption(f"Sorgente: {lesson.source_file} · {len(lesson.slide_ids)} slide")
-                for topic in lesson.subtopics:
-                    st.markdown(f"- {topic}")
-
-    with t2:
-        st.write("L'agente esamina ogni slide separatamente e propone correzioni puntuali.")
-        if st.button("Genera proposte di correzione"):
-            with st.spinner("Analizzo tutte le slide del corso…"):
-                S.slide_corrections = review_slides(S.chunks)
-        if not S.get("slide_corrections"):
-            st.info("Premi il pulsante per generare le proposte.")
-        else:
-            by_slide = {}
-            for proposal in S.slide_corrections:
-                by_slide.setdefault((proposal.slide_id, proposal.slide_ref), []).append(proposal)
-            st.metric("Proposte generate", len(S.slide_corrections))
-            for (_, slide_ref), proposals in by_slide.items():
-                with st.expander(slide_ref):
-                    for i, proposal in enumerate(proposals, 1):
-                        st.markdown(f"**Proposta {i} · Errore o limite**")
-                        st.write(proposal.error)
-                        st.markdown("**Correzione proposta**")
-                        st.write(proposal.correction)
-
-    with t3:
-        st.write("L'AI ha estratto questi concetti dal materiale. Conferma quelli corretti.")
-        for c in S.concepts:
-            c.validated = st.checkbox(f"**{c.name}** – {c.description}  ·  {len(c.chunk_ids)} blocchi",
-                                      value=c.validated, key=f"val-{c.id}")
+        with st.expander(f"Mappa dei concetti ({sum(c.validated for c in S.concepts)}/{len(S.concepts)} confermati)"):
+            for c in S.concepts:
+                c.validated = st.checkbox(f"**{c.name}** – {c.description}  ·  {len(c.chunk_ids)} blocchi",
+                                          value=c.validated, key=f"val-{c.id}")
         ok = sum(c.validated for c in S.concepts)
-        st.metric("Accordo con il docente", f"{ok}/{len(S.concepts)}")
-
-    with t4:
-        if st.button("Genera coppie di verifica"):
+        a, b = st.columns(2)
+        if a.button("① Genera coppie tipico + variante"):
             with st.spinner("Genero esercizio tipico + variante per ogni concetto…"):
                 S.exercises = [e for c in S.concepts if c.validated or ok == 0 for e in make_pair(c, S.index)]
-        refs = {c.id: c.ref for c in S.chunks}
-        for e in [e for e in S.exercises if e.kind == "variant"]:
-            typ = next(x for x in S.exercises if x.id == e.concept_id + "-typ")
-            with st.container(border=True):
-                st.markdown(f"#### {name.get(e.concept_id, e.concept_id)} · stato: `{e.status}`")
-                a, b = st.columns(2)
-                a.markdown("**Esercizio tipico**"); a.write(typ.prompt)
-                b.markdown("**Variante (da approvare)**"); b.write(e.prompt)
-                st.caption("Fonti: " + ", ".join(refs.get(s, s) for s in e.sources))
-                c1, c2, _ = st.columns([1, 1, 6])
-                if c1.button("Approva", key=f"ok-{e.id}"):
-                    e.status = "approved"; st.rerun()
-                if c2.button("Scarta", key=f"no-{e.id}"):
-                    e.status = "rejected"; st.rerun()
-        if S.exercises:
-            n = sum(e.status == "approved" for e in S.exercises if e.kind == "variant")
-            st.metric("Varianti approvate", f"{n}/{len(S.exercises) // 2}")
-
-    with t5:
-        if st.button("Simula una verifica con la classe (20 studenti)"):
-            S.answers = simulate_class(S.exercises)
-        if not all_answers():
-            st.info("Approva qualche variante e simula la classe.")
-        else:
-            ms = concept_metrics(S.concepts, S.chunks, S.exercises, all_answers())
+        variants = [e for e in S.exercises if e.kind == "variant"]
+        if variants and b.button("Approva tutte le varianti"):
+            for e in variants:
+                e.status = "approved"
+        if variants:
+            n_ok = sum(e.status == "approved" for e in variants)
+            with st.expander(f"Varianti da approvare ({n_ok}/{len(variants)} approvate)", expanded=n_ok == 0):
+                refs = {c.id: c.ref for c in S.chunks}
+                for e in variants:
+                    typ = next(x for x in S.exercises if x.id == e.concept_id + "-typ")
+                    with st.container(border=True):
+                        st.markdown(f"#### {name.get(e.concept_id, e.concept_id)} · stato: `{e.status}`")
+                        x, y = st.columns(2)
+                        x.markdown("**Esercizio tipico**"); x.write(typ.prompt)
+                        y.markdown("**Variante**"); y.write(e.prompt)
+                        st.caption("Fonti: " + ", ".join(refs.get(s, s) for s in e.sources))
+                        c1, c2, _ = st.columns([1, 1, 6])
+                        if c1.button("Approva", key=f"ok-{e.id}"):
+                            e.status = "approved"; st.rerun()
+                        if c2.button("Scarta", key=f"no-{e.id}"):
+                            e.status = "rejected"; st.rerun()
+            if st.button("② Simula una verifica con la classe (20 studenti)", type="primary"):
+                S.answers = simulate_class(S.exercises)
+        if all_answers():
+            ms = sorted(concept_metrics(S.concepts, S.chunks, S.exercises, all_answers()),
+                        key=lambda m: m.transfer_gap, reverse=True)
             df = pd.DataFrame([{"Concetto": name[m.concept_id], "Tipici": m.typical_score,
                                 "Varianti": m.variant_score, "Transfer gap": m.transfer_gap,
                                 "Peso slide": m.teaching_weight, "Peso esame": m.exam_weight} for m in ms])
+            worst = ms[0]
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Gap medio", f"{sum(m.transfer_gap for m in ms) / len(ms):+.0%}")
+            k2.metric("Concetto peggiore", name[worst.concept_id], f"{worst.transfer_gap:+.0%}", delta_color="inverse")
+            k3.metric("Distanza insegnato ↔ testato", f"{coverage_distance(ms):.0%}")
             st.subheader("Transfer gap per concetto")
             st.bar_chart(df.set_index("Concetto")[["Tipici", "Varianti"]], stack=False)
-            st.subheader("Indice di copertura")
-            st.metric("Distanza insegnato ↔ testato", f"{coverage_distance(ms):.0%}")
-            st.bar_chart(df.set_index("Concetto")[["Peso slide", "Peso esame"]], stack=False)
             st.dataframe(df, hide_index=True)
+            st.success("Prosegui al tab **2 · Tre agenti al lavoro**: interverranno sui concetti in cima a questa lista.")
+        elif S.exercises:
+            st.info("Approva le varianti e simula la classe per vedere il transfer gap.")
 
-    with t6:
+    with t2:
         if not all_answers():
-            st.info("Servono prima le risposte della classe.")
+            st.info("Prima serve la diagnosi (tab 1): gli agenti lavorano solo sui concetti con gap alto.")
         else:
-            if st.button("Analizza i disallineamenti", type="primary"):
-                with st.spinner("L'agente interpreta i dati…"):
-                    ms = concept_metrics(S.concepts, S.chunks, S.exercises, all_answers())
-                    S.mis = misalignments(S.concepts, ms, all_answers(), S.exercises, S.index)
-            for d in S.get("mis") or []:
+            ctx = build_context(S.chunks, S.index, S.concepts, S.exercises, all_answers(),
+                                str(course_path(course)), exams_from)
+            st.markdown("**Concetti su cui interveniamo**")
+            for con, m in ctx.focus():
+                st.markdown(f"- **{con.name}** · {evidence(m)}")
+            if st.button("Avvia i tre agenti in parallelo", type="primary"):
+                with st.spinner("Materiale, esercitazioni ed esami in parallelo…"):
+                    S.proposals, S.agent_errors = run_agents(ctx)
+            cols = st.columns(len(AGENTS))
+            for col, agent in zip(cols, AGENTS):
+                with col:
+                    st.subheader(agent.title)
+                    st.caption(agent.goal)
+                    if agent.name in S.get("agent_errors", {}):
+                        st.error(S.agent_errors[agent.name])
+                    for i, p in enumerate(S.get("proposals", {}).get(agent.name, [])):
+                        with st.container(border=True):
+                            st.markdown(f"**{name.get(p.concept_id, p.concept_id)}** · `{p.status}`")
+                            st.caption(f"Dove: {p.target_ref}")
+                            st.markdown(f"**Problema:** {p.problem}")
+                            st.markdown(f"**Proposta:** {p.change}")
+                            st.caption(p.rationale)
+                            c1, c2 = st.columns(2)
+                            if c1.button("Approva", key=f"pa-{agent.name}-{i}"):
+                                p.status = "approved"; st.rerun()
+                            if c2.button("Scarta", key=f"pr-{agent.name}-{i}"):
+                                p.status = "rejected"; st.rerun()
+
+    with t3:
+        approved = [p for ps in S.get("proposals", {}).values() for p in ps if p.status == "approved"]
+        if not approved:
+            st.info("Approva qualche proposta degli agenti nel tab 2.")
+        else:
+            st.write("Per ogni concetto, il piano tocca tutti i lati: nessuno porta da solo la colpa del gap (ADR 0002).")
+            titles = {a.name: a.title for a in AGENTS}
+            for cid in dict.fromkeys(p.concept_id for p in approved):
                 with st.container(border=True):
-                    st.markdown(f"### {name[d.concept_id]}")
-                    st.caption(d.evidence)
-                    st.markdown(f"**Cosa significa:** {d.meaning}")
-                    a, b, c = st.columns(3)
-                    a.markdown("**📚 Slide e lezioni**"); a.write(d.suggestion_teaching)
-                    b.markdown("**📝 Esame**"); b.write(d.suggestion_exam)
-                    c.markdown("**🎓 Studenti**"); c.write(d.suggestion_student)
+                    st.markdown(f"### {name.get(cid, cid)}")
+                    for p in (p for p in approved if p.concept_id == cid):
+                        st.markdown(f"**{titles[p.agent]}** · {p.target_ref}: {p.change}")
 
 # ---------- vista studente ----------
 else:
