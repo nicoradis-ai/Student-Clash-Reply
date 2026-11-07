@@ -156,23 +156,9 @@ def render_survey_creator():
                 st.rerun()
 
 
-def render_exam_reviewer():
-    st.subheader("Revisore esami")
-    st.write("Controlla la coerenza tra programma, slide e temi d'esame.")
-    exams = [chunk for chunk in S.chunks if chunk.source == "exam"]
-    st.metric("Blocchi d'esame disponibili", len(exams))
-    if not exams:
-        st.info("Questo corso non contiene temi d'esame.")
-        return
-    if st.button("Prepara revisione degli esami", type="primary"):
-        st.session_state.exam_review_ready = True
-    if st.session_state.get("exam_review_ready"):
-        grouped = defaultdict(int)
-        for exam in exams:
-            grouped[exam.ref.split(",")[0].split(" p.")[0]] += 1
-        st.success("Materiale pronto per la revisione.")
-        st.dataframe(pd.DataFrame([{"Esame": name, "Blocchi": count} for name, count in grouped.items()]), hide_index=True)
-        st.info("Il revisore esami è isolato dagli altri agenti: qui aggiungeremo le regole di revisione nel prossimo passaggio.")
+def render_exam_reviewer(course: str, exams_from: str | None):
+    from app.exam_ui import render
+    render(S, str(course_path(course)), exams_from)
 
 
 def render_materials_update(course: str):
@@ -282,7 +268,7 @@ else:
     ])
 
     if agent == "Revisore esami":
-        render_exam_reviewer()
+        render_exam_reviewer(course, exams_from)
     elif agent == "Remaker delle slide":
         render_slide_remaker()
     elif agent == "Creatore di survey":
