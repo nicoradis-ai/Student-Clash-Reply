@@ -14,6 +14,25 @@ class Chunk:
 
 
 @dataclass
+class Lesson:
+    """Una lezione corrisponde a un file di slide/PDF e contiene i suoi sottoargomenti."""
+    id: str
+    title: str
+    source_file: str
+    slide_ids: list[str] = field(default_factory=list)
+    subtopics: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SlideCorrection:
+    """Una proposta puntuale di miglioramento riferita a una singola slide."""
+    slide_id: str
+    slide_ref: str
+    error: str
+    correction: str
+
+
+@dataclass
 class Concept:
     id: str                      # slug, es. "polimorfismo"
     name: str

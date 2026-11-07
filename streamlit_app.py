@@ -9,6 +9,7 @@ from app.grading import grade
 from app import ingest
 from app.ingest import course_config, course_path, list_courses, load_course
 from app.insights import misalignments, study_advice
+from app.lessons import build_lessons, review_slides
 from app.metrics import concept_metrics, coverage_distance
 from app.rag import Index
 from app.simulate import simulate_class
@@ -45,11 +46,14 @@ if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
         S.chunks = _load(course, exams_from)
         n_s = sum(c.source == "slide" for c in S.chunks)
         st.write(f"{n_s} pagine di slide, {len(S.chunks) - n_s} pagine d'esame.")
-        st.write("2/3 · Costruisco l'indice di ricerca (embedding)…")
+        st.write("2/4 · Costruisco l'indice di ricerca (embedding)…")
         S.index = Index(S.chunks)
-        st.write("3/3 · Estraggo la mappa dei concetti…")
+        st.write("3/4 · Costruisco l'overview di tutte le lezioni…")
+        S.lessons = build_lessons(S.chunks)
+        st.write("4/4 · Estraggo la mappa dei concetti…")
         S.concepts = extract_concepts(S.chunks)
         S.exercises, S.answers, S.live_answers, S.mis = [], [], [], None
+        S.slide_corrections = []
         S.key = key
         ok = bool(S.chunks and S.concepts)
         box.update(label=f"Materiale caricato: {len(S.chunks)} blocchi, {len(S.concepts)} concetti" if ok
@@ -84,10 +88,39 @@ def all_answers():
 
 # ---------- vista docente ----------
 if view == "Docente":
-    t1, t2, t3, t4 = st.tabs(["1 · Mappa dei concetti", "2 · Varianti da approvare",
-                              "3 · Classe e metriche", "4 · Disallineamenti"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(["1 · Lezioni", "2 · Correzioni slide", "3 · Mappa dei concetti",
+                                      "4 · Varianti da approvare", "5 · Classe e metriche", "6 · Disallineamenti"])
 
     with t1:
+        st.write("Ogni file di slide/PDF è trattato come una lezione. Qui trovi tutti i sottoargomenti individuati.")
+        for lesson in S.get("lessons", []):
+            with st.container(border=True):
+                st.markdown(f"### {lesson.title}")
+                st.caption(f"Sorgente: {lesson.source_file} · {len(lesson.slide_ids)} slide")
+                for topic in lesson.subtopics:
+                    st.markdown(f"- {topic}")
+
+    with t2:
+        st.write("L'agente esamina ogni slide separatamente e propone correzioni puntuali.")
+        if st.button("Genera proposte di correzione"):
+            with st.spinner("Analizzo tutte le slide del corso…"):
+                S.slide_corrections = review_slides(S.chunks)
+        if not S.get("slide_corrections"):
+            st.info("Premi il pulsante per generare le proposte.")
+        else:
+            by_slide = {}
+            for proposal in S.slide_corrections:
+                by_slide.setdefault((proposal.slide_id, proposal.slide_ref), []).append(proposal)
+            st.metric("Proposte generate", len(S.slide_corrections))
+            for (_, slide_ref), proposals in by_slide.items():
+                with st.expander(slide_ref):
+                    for i, proposal in enumerate(proposals, 1):
+                        st.markdown(f"**Proposta {i} · Errore o limite**")
+                        st.write(proposal.error)
+                        st.markdown("**Correzione proposta**")
+                        st.write(proposal.correction)
+
+    with t3:
         st.write("L'AI ha estratto questi concetti dal materiale. Conferma quelli corretti.")
         for c in S.concepts:
             c.validated = st.checkbox(f"**{c.name}** – {c.description}  ·  {len(c.chunk_ids)} blocchi",
@@ -95,7 +128,7 @@ if view == "Docente":
         ok = sum(c.validated for c in S.concepts)
         st.metric("Accordo con il docente", f"{ok}/{len(S.concepts)}")
 
-    with t2:
+    with t4:
         if st.button("Genera coppie di verifica"):
             with st.spinner("Genero esercizio tipico + variante per ogni concetto…"):
                 S.exercises = [e for c in S.concepts if c.validated or ok == 0 for e in make_pair(c, S.index)]
@@ -117,7 +150,7 @@ if view == "Docente":
             n = sum(e.status == "approved" for e in S.exercises if e.kind == "variant")
             st.metric("Varianti approvate", f"{n}/{len(S.exercises) // 2}")
 
-    with t3:
+    with t5:
         if st.button("Simula una verifica con la classe (20 studenti)"):
             S.answers = simulate_class(S.exercises)
         if not all_answers():
@@ -134,7 +167,7 @@ if view == "Docente":
             st.bar_chart(df.set_index("Concetto")[["Peso slide", "Peso esame"]], stack=False)
             st.dataframe(df, hide_index=True)
 
-    with t4:
+    with t6:
         if not all_answers():
             st.info("Servono prima le risposte della classe.")
         else:
