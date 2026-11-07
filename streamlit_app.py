@@ -42,8 +42,13 @@ def _load(course: str, exams_from):
 key = (course, exams_from)
 if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
     with st.status("Carico il materiale del corso…", expanded=True) as box:
-        st.write("1/3 · Leggo slide ed esami (con molti PDF serve circa mezzo minuto)…")
+        ingest.WARNINGS.clear()
+        st.write("1/4 · Leggo slide ed esami (con molti PDF serve circa mezzo minuto)…")
         S.chunks = _load(course, exams_from)
+        # Se una vecchia cache contiene il risultato vuoto ottenuto senza pypdf,
+        # riprova senza cache dopo l'installazione della dipendenza.
+        if not S.chunks:
+            S.chunks = load_course(course_path(course), exams_from)
         n_s = sum(c.source == "slide" for c in S.chunks)
         st.write(f"{n_s} pagine di slide, {len(S.chunks) - n_s} pagine d'esame.")
         st.write("2/4 · Costruisco l'indice di ricerca (embedding)…")

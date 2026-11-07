@@ -2,5 +2,5 @@ streamlit>=1.37
 openai>=1.40
 numpy
 pandas
-pypdf
+pypdf>=7.0
 pytest
