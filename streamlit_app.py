@@ -1,223 +1,232 @@
-"""Demo AI on Campus – sonda di transfer + tre agenti (ADR 0006). Avvio: streamlit run streamlit_app.py"""
+"""The Lazy Prof: interfaccia semplice per studenti e professori."""
+from collections import defaultdict
+
 import pandas as pd
 import streamlit as st
 
-from app import llm
+from app import ingest, llm
 from app.concepts import extract_concepts
 from app.exercises import make_pair
 from app.grading import grade
-from app import ingest
 from app.ingest import course_config, course_path, list_courses, load_course
-from app.agents import AGENTS, evidence
-from app.insights import study_advice
-from app.orchestrator import build_context, run_agents
-from app.metrics import concept_metrics, coverage_distance
+from app.lessons import build_lessons, review_slides
 from app.rag import Index
-from app.simulate import simulate_class
 
-st.set_page_config(page_title="Sonda di transfer", layout="wide")
+
+st.set_page_config(page_title="The Lazy Prof", page_icon="🎓", layout="wide")
 S = st.session_state
-
-# ---------- barra laterale ----------
-st.sidebar.title("Sonda di transfer")
-if not llm.is_online():
-    st.sidebar.warning("Modalità offline: niente OPENAI_API_KEY, uso risposte di riserva.")
-courses = list_courses()
-if not courses:
-    st.error(f"Nessun corso trovato in {ingest.DATA_DIR}. Ogni corso è una cartella con slides/ ed exams/.")
-    st.stop()
-course = st.sidebar.selectbox("Corso", courses)
-cfg = course_config(course_path(course))
-exams_from = None
-if cfg.get("exams_from"):
-    if st.sidebar.checkbox(f"Solo esami dal {cfg['exams_from']}", value=True,
-                           help=cfg.get("exams_from_note", "")):
-        exams_from = cfg["exams_from"]
 
 
 @st.cache_data(show_spinner=False)
-def _load(course: str, exams_from):
+def load_material(course: str, exams_from: str | None):
     return load_course(course_path(course), exams_from)
 
 
-key = (course, exams_from)
-if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
-    with st.status("Carico il materiale del corso…", expanded=True) as box:
-        ingest.WARNINGS.clear()
-        st.write("1/3 · Leggo slide, esercitazioni ed esami (con molti PDF serve circa mezzo minuto)…")
-        S.chunks = _load(course, exams_from)
-        # Se una vecchia cache contiene il risultato vuoto ottenuto senza pypdf,
-        # riprova senza cache dopo l'installazione della dipendenza.
-        if not S.chunks:
-            S.chunks = load_course(course_path(course), exams_from)
-        n = {k: sum(c.source == k for c in S.chunks) for k in ("slide", "exercise", "exam")}
-        st.write(f"{n['slide']} pagine di slide, {n['exercise']} di esercitazioni, {n['exam']} d'esame.")
-        st.write("2/3 · Costruisco l'indice di ricerca (embedding)…")
-        S.index = Index(S.chunks)
-        st.write("3/3 · Estraggo la mappa dei concetti…")
-        S.concepts = extract_concepts(S.chunks)
-        S.exercises, S.answers, S.live_answers, S.proposals, S.agent_errors = [], [], [], {}, {}
-        S.key = key
-        ok = bool(S.chunks and S.concepts)
-        box.update(label=f"Materiale caricato: {len(S.chunks)} blocchi, {len(S.concepts)} concetti" if ok
-                   else "Caricamento incompleto", state="complete" if ok else "error", expanded=not ok)
-st.sidebar.caption(f"{len(S.get('chunks', []))} blocchi di materiale · {len(S.get('concepts', []))} concetti")
-if ingest.WARNINGS:
-    st.sidebar.error("Problemi nella lettura dei file:\n\n" + "\n\n".join(ingest.WARNINGS[:5]))
-if not S.get("chunks"):
-    st.error("Non ho trovato testo nel materiale di questo corso. Controlla che le librerie siano installate "
-             "(`pip install -r requirements.txt`, serve pypdf) e che i file siano in slides/ ed exams/.")
-    st.stop()
-
-view = st.sidebar.radio("Vista", ["Docente", "Studente"])
+def reset_course_state():
+    S.exercises = []
+    S.answers = []
+    S.live_answers = []
+    S.slide_corrections = []
 
 
-def status_banner():
-    """Va chiamato alla fine dello script, così conta anche gli errori di questo giro."""
-    if llm.is_online() and (llm.ERRORS or llm.EMBED_DEGRADED):
-        st.sidebar.error(f"OpenAI non ha risposto: {llm.FALLBACKS} risposte di riserva usate."
-                         + (" Embedding passati a offline." if llm.EMBED_DEGRADED else ""))
-        with st.sidebar.expander("Dettagli"):
-            for e in llm.ERRORS[-5:]:
-                st.caption(e)
-    elif llm.is_online():
-        st.sidebar.success(f"Online · {llm.MODEL}")
-name = {c.id: c.name for c in S.get("concepts", [])}
+def load_course_into_session(course: str, exams_from: str | None):
+    """Carica un corso una sola volta nella sessione corrente."""
+    key = (course, exams_from)
+    if S.get("course_key") == key and S.get("chunks"):
+        return
+
+    ingest.WARNINGS.clear()
+    with st.status("Carico il corso…", expanded=True) as status:
+        chunks = load_material(course, exams_from)
+        if not chunks:
+            # Recupera eventuali valori vuoti rimasti nella cache da un ambiente
+            # dove pypdf non era installato.
+            chunks = load_course(course_path(course), exams_from)
+        S.chunks = chunks
+        S.index = Index(chunks) if chunks else None
+        S.lessons = build_lessons(chunks) if chunks else []
+        S.concepts = extract_concepts(chunks) if chunks else []
+        reset_course_state()
+        S.course_key = key
+        status.update(
+            label=f"{len(chunks)} blocchi caricati" if chunks else "Nessun materiale trovato",
+            state="complete" if chunks else "error",
+            expanded=False,
+        )
 
 
-def all_answers():
-    return S.get("answers", []) + S.get("live_answers", [])
+def course_selector():
+    courses = list_courses()
+    if not courses:
+        st.error(f"Nessun corso trovato in {ingest.DATA_DIR}.")
+        st.stop()
+
+    course = st.selectbox("Corso", courses)
+    config = course_config(course_path(course))
+    exams_from = None
+    if config.get("exams_from"):
+        exams_from = config["exams_from"] if st.checkbox(
+            f"Usa solo gli esami dal {config['exams_from']}", value=True,
+            help=config.get("exams_from_note", ""),
+        ) else None
+    return course, exams_from
 
 
-# ---------- vista docente ----------
-if view == "Docente":
-    st.title("Gli studenti sanno risolvere l'esame, ma hanno capito il corso?")
-    st.write("Per ogni concetto confrontiamo il punteggio su un **esercizio tipico** (la forma solita d'esame) e su una "
-             "**variante** (stesso concetto, forma nuova). La differenza è il **transfer gap**: dove è alto, gli studenti "
-             "hanno imparato lo schema e non il concetto. Tre agenti lavorano poi in parallelo sui concetti peggiori: "
-             "materiale, esercitazioni, esami.")
-    t1, t2, t3 = st.tabs(["1 · Diagnosi: dove si impara lo schema", "2 · Tre agenti al lavoro", "3 · Piano approvato"])
+def render_slide_remaker():
+    st.subheader("Remaker delle slide")
+    st.write("Analizza ogni lezione e propone miglioramenti puntuali per ogni slide.")
 
-    with t1:
-        with st.expander(f"Mappa dei concetti ({sum(c.validated for c in S.concepts)}/{len(S.concepts)} confermati)"):
-            for c in S.concepts:
-                c.validated = st.checkbox(f"**{c.name}** – {c.description}  ·  {len(c.chunk_ids)} blocchi",
-                                          value=c.validated, key=f"val-{c.id}")
-        ok = sum(c.validated for c in S.concepts)
-        a, b = st.columns(2)
-        if a.button("① Genera coppie tipico + variante"):
-            with st.spinner("Genero esercizio tipico + variante per ogni concetto…"):
-                S.exercises = [e for c in S.concepts if c.validated or ok == 0 for e in make_pair(c, S.index)]
-        variants = [e for e in S.exercises if e.kind == "variant"]
-        if variants and b.button("Approva tutte le varianti"):
-            for e in variants:
-                e.status = "approved"
-        if variants:
-            n_ok = sum(e.status == "approved" for e in variants)
-            with st.expander(f"Varianti da approvare ({n_ok}/{len(variants)} approvate)", expanded=n_ok == 0):
-                refs = {c.id: c.ref for c in S.chunks}
-                for e in variants:
-                    typ = next(x for x in S.exercises if x.id == e.concept_id + "-typ")
-                    with st.container(border=True):
-                        st.markdown(f"#### {name.get(e.concept_id, e.concept_id)} · stato: `{e.status}`")
-                        x, y = st.columns(2)
-                        x.markdown("**Esercizio tipico**"); x.write(typ.prompt)
-                        y.markdown("**Variante**"); y.write(e.prompt)
-                        st.caption("Fonti: " + ", ".join(refs.get(s, s) for s in e.sources))
-                        c1, c2, _ = st.columns([1, 1, 6])
-                        if c1.button("Approva", key=f"ok-{e.id}"):
-                            e.status = "approved"; st.rerun()
-                        if c2.button("Scarta", key=f"no-{e.id}"):
-                            e.status = "rejected"; st.rerun()
-            if st.button("② Simula una verifica con la classe (20 studenti)", type="primary"):
-                S.answers = simulate_class(S.exercises)
-        if all_answers():
-            ms = sorted(concept_metrics(S.concepts, S.chunks, S.exercises, all_answers()),
-                        key=lambda m: m.transfer_gap, reverse=True)
-            df = pd.DataFrame([{"Concetto": name[m.concept_id], "Tipici": m.typical_score,
-                                "Varianti": m.variant_score, "Transfer gap": m.transfer_gap,
-                                "Peso slide": m.teaching_weight, "Peso esame": m.exam_weight} for m in ms])
-            worst = ms[0]
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Gap medio", f"{sum(m.transfer_gap for m in ms) / len(ms):+.0%}")
-            k2.metric("Concetto peggiore", name[worst.concept_id], f"{worst.transfer_gap:+.0%}", delta_color="inverse")
-            k3.metric("Distanza insegnato ↔ testato", f"{coverage_distance(ms):.0%}")
-            st.subheader("Transfer gap per concetto")
-            st.bar_chart(df.set_index("Concetto")[["Tipici", "Varianti"]], stack=False)
-            st.dataframe(df, hide_index=True)
-            st.success("Prosegui al tab **2 · Tre agenti al lavoro**: interverranno sui concetti in cima a questa lista.")
-        elif S.exercises:
-            st.info("Approva le varianti e simula la classe per vedere il transfer gap.")
+    for lesson in S.get("lessons", []):
+        with st.expander(f"{lesson.title} · {len(lesson.slide_ids)} slide"):
+            for topic in lesson.subtopics:
+                st.markdown(f"- {topic}")
 
-    with t2:
-        if not all_answers():
-            st.info("Prima serve la diagnosi (tab 1): gli agenti lavorano solo sui concetti con gap alto.")
-        else:
-            ctx = build_context(S.chunks, S.index, S.concepts, S.exercises, all_answers(),
-                                str(course_path(course)), exams_from)
-            st.markdown("**Concetti su cui interveniamo**")
-            for con, m in ctx.focus():
-                st.markdown(f"- **{con.name}** · {evidence(m)}")
-            if st.button("Avvia i tre agenti in parallelo", type="primary"):
-                with st.spinner("Materiale, esercitazioni ed esami in parallelo…"):
-                    S.proposals, S.agent_errors = run_agents(ctx)
-            cols = st.columns(len(AGENTS))
-            for col, agent in zip(cols, AGENTS):
-                with col:
-                    st.subheader(agent.title)
-                    st.caption(agent.goal)
-                    if agent.name in S.get("agent_errors", {}):
-                        st.error(S.agent_errors[agent.name])
-                    for i, p in enumerate(S.get("proposals", {}).get(agent.name, [])):
-                        with st.container(border=True):
-                            st.markdown(f"**{name.get(p.concept_id, p.concept_id)}** · `{p.status}`")
-                            st.caption(f"Dove: {p.target_ref}")
-                            st.markdown(f"**Problema:** {p.problem}")
-                            st.markdown(f"**Proposta:** {p.change}")
-                            st.caption(p.rationale)
-                            c1, c2 = st.columns(2)
-                            if c1.button("Approva", key=f"pa-{agent.name}-{i}"):
-                                p.status = "approved"; st.rerun()
-                            if c2.button("Scarta", key=f"pr-{agent.name}-{i}"):
-                                p.status = "rejected"; st.rerun()
+    if st.button("Analizza le slide", type="primary"):
+        with st.spinner("Il remaker sta analizzando tutte le slide…"):
+            S.slide_corrections = review_slides(S.chunks)
 
-    with t3:
-        approved = [p for ps in S.get("proposals", {}).values() for p in ps if p.status == "approved"]
-        if not approved:
-            st.info("Approva qualche proposta degli agenti nel tab 2.")
-        else:
-            st.write("Per ogni concetto, il piano tocca tutti i lati: nessuno porta da solo la colpa del gap (ADR 0002).")
-            titles = {a.name: a.title for a in AGENTS}
-            for cid in dict.fromkeys(p.concept_id for p in approved):
-                with st.container(border=True):
-                    st.markdown(f"### {name.get(cid, cid)}")
-                    for p in (p for p in approved if p.concept_id == cid):
-                        st.markdown(f"**{titles[p.agent]}** · {p.target_ref}: {p.change}")
+    corrections = S.get("slide_corrections", [])
+    if not corrections:
+        st.info("Avvia l'analisi per vedere le proposte di correzione.")
+        return
 
-# ---------- vista studente ----------
+    by_slide = defaultdict(list)
+    for correction in corrections:
+        by_slide[correction.slide_ref].append(correction)
+    st.metric("Proposte generate", len(corrections))
+    for slide_ref, proposals in by_slide.items():
+        with st.expander(slide_ref):
+            for number, proposal in enumerate(proposals, 1):
+                st.markdown(f"**{number}. Errore o limite**")
+                st.write(proposal.error)
+                st.markdown("**Correzione proposta**")
+                st.write(proposal.correction)
+
+
+def lesson_concepts(lesson):
+    slide_ids = set(lesson.slide_ids)
+    return [c for c in S.get("concepts", []) if slide_ids.intersection(c.chunk_ids)]
+
+
+def render_survey_creator():
+    st.subheader("Creatore di survey")
+    st.write("Scegli una lezione: l'agente creerà survey tipici e varianti sul suo contenuto.")
+    lessons = S.get("lessons", [])
+    if not lessons:
+        st.info("Questo corso non contiene lezioni leggibili.")
+        return
+
+    selected = st.selectbox("Lezione", lessons, format_func=lambda lesson: lesson.title)
+    concepts = lesson_concepts(selected) or S.get("concepts", [])
+    st.caption(f"Concetti collegati: {', '.join(c.name for c in concepts) or 'nessuno'}")
+
+    if st.button("Crea survey per questa lezione", type="primary"):
+        with st.spinner("Creo le survey…"):
+            generated = []
+            for concept in concepts:
+                generated.extend(make_pair(concept, S.index))
+            existing = {exercise.id for exercise in S.get("exercises", [])}
+            S.exercises.extend(exercise for exercise in generated if exercise.id not in existing)
+
+    exercises = S.get("exercises", [])
+    if not exercises:
+        st.info("Nessuna survey creata.")
+        return
+
+    names = {concept.id: concept.name for concept in S.get("concepts", [])}
+    refs = {chunk.id: chunk.ref for chunk in S.chunks}
+    for variant in [e for e in exercises if e.kind == "variant"]:
+        typical = next(e for e in exercises if e.id == variant.concept_id + "-typ")
+        with st.container(border=True):
+            st.markdown(f"### {names.get(variant.concept_id, variant.concept_id)}")
+            left, right = st.columns(2)
+            left.markdown("**Survey tipica**")
+            left.write(typical.prompt)
+            right.markdown(f"**Survey variante · {variant.status}**")
+            right.write(variant.prompt)
+            st.caption("Fonti: " + ", ".join(refs.get(source, source) for source in variant.sources))
+            approve, reject, _ = st.columns([1, 1, 5])
+            if approve.button("Approva", key=f"approve-{variant.id}"):
+                variant.status = "approved"
+                st.rerun()
+            if reject.button("Scarta", key=f"reject-{variant.id}"):
+                variant.status = "rejected"
+                st.rerun()
+
+
+def render_exam_reviewer():
+    st.subheader("Revisore esami")
+    st.write("Controlla la coerenza tra programma, slide e temi d'esame.")
+    exams = [chunk for chunk in S.chunks if chunk.source == "exam"]
+    st.metric("Blocchi d'esame disponibili", len(exams))
+    if not exams:
+        st.info("Questo corso non contiene temi d'esame.")
+        return
+    if st.button("Prepara revisione degli esami", type="primary"):
+        st.session_state.exam_review_ready = True
+    if st.session_state.get("exam_review_ready"):
+        grouped = defaultdict(int)
+        for exam in exams:
+            grouped[exam.ref.split(",")[0].split(" p.")[0]] += 1
+        st.success("Materiale pronto per la revisione.")
+        st.dataframe(pd.DataFrame([{"Esame": name, "Blocchi": count} for name, count in grouped.items()]), hide_index=True)
+        st.info("Il revisore esami è isolato dagli altri agenti: qui aggiungeremo le regole di revisione nel prossimo passaggio.")
+
+
+def render_student():
+    st.header("Area studente")
+    st.write("Qui compaiono solo le survey approvate dal professore.")
+    approved_variants = [e for e in S.get("exercises", []) if e.kind == "variant" and e.status == "approved"]
+    if not approved_variants:
+        st.info("Non ci sono ancora survey approvate dal professore.")
+        return
+
+    student_id = st.text_input("Nome", "studente")
+    names = {concept.id: concept.name for concept in S.get("concepts", [])}
+    selected = st.selectbox("Survey", approved_variants, format_func=lambda e: names.get(e.concept_id, e.concept_id))
+    st.markdown(f"### {names.get(selected.concept_id, selected.concept_id)}")
+    st.write(selected.prompt)
+    answer = st.text_area("La tua risposta")
+    if st.button("Invia risposta", type="primary") and answer.strip():
+        result = grade(selected, answer, student_id)
+        S.live_answers.append(result)
+        st.success(f"Punteggio: {result.score:.0%}")
+        st.write(result.feedback)
+
+
+st.title("The Lazy Prof")
+st.caption("Un assistente semplice per rendere più leggero il lavoro del professore.")
+
+role = st.radio("Come vuoi entrare?", ["Studente", "Professore"], horizontal=True)
+
+if role == "Studente":
+    render_student()
 else:
-    sid = st.sidebar.text_input("Il tuo nome", "studente-demo")
-    ready = [e for e in S.get("exercises", []) if e.status == "approved"]
-    if not ready:
-        st.info("Il docente non ha ancora approvato esercizi.")
-    else:
-        cid = st.selectbox("Concetto", sorted({e.concept_id for e in ready}), format_func=lambda c: name.get(c, c))
-        for e in [e for e in ready if e.concept_id == cid]:
-            with st.container(border=True):
-                st.markdown("**Esercizio tipico**" if e.kind == "typical" else "**Variante**")
-                st.write(e.prompt)
-                txt = st.text_area("La tua risposta", key=f"ans-{e.id}")
-                if st.button("Invia", key=f"send-{e.id}") and txt.strip():
-                    a = grade(e, txt, sid)
-                    S.live_answers.append(a)
-                    st.success(f"Punteggio: {a.score:.0%}")
-                    st.write(a.feedback)
-        mine = [a for a in S.live_answers if a.student_id == sid]
-        if mine:
-            st.subheader("I miei gap e cosa ripassare")
-            ms = concept_metrics(S.concepts, S.chunks, S.exercises, mine)
-            tips = study_advice(ms, S.concepts)
-            for t in tips or ["Nessun gap evidente per ora: prova anche le varianti degli altri concetti."]:
-                st.write("• " + t)
+    st.header("Area professore")
+    course, exams_from = course_selector()
+    if st.button("Carica corso", type="primary") or S.get("course_key") != (course, exams_from):
+        load_course_into_session(course, exams_from)
 
-status_banner()
+    if not S.get("chunks"):
+        st.warning("Carica un corso per iniziare.")
+        st.stop()
+    if ingest.WARNINGS:
+        st.warning("Problemi nella lettura: " + " · ".join(ingest.WARNINGS[:3]))
+
+    st.divider()
+    st.subheader("Scegli l'agente")
+    agent = st.selectbox("Agente", [
+        "Revisore esami",
+        "Remaker delle slide",
+        "Creatore di survey",
+    ])
+
+    if agent == "Revisore esami":
+        render_exam_reviewer()
+    elif agent == "Remaker delle slide":
+        render_slide_remaker()
+    else:
+        render_survey_creator()
+
+if llm.is_online() and llm.ERRORS:
+    st.sidebar.warning(f"Sono state usate {llm.FALLBACKS} risposte di riserva.")
