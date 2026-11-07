@@ -1,8 +1,6 @@
 """The Lazy Prof: interfaccia semplice per studenti e professori."""
-from collections import defaultdict
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
 from app import ingest, llm
@@ -10,7 +8,7 @@ from app.concepts import extract_concepts
 from app.exercises import make_pair
 from app.grading import grade
 from app.ingest import course_config, course_path, list_courses, load_course
-from app.lessons import build_lessons, review_slides
+from app.lessons import build_lessons
 from app.materials_update import approve_change, prepare_materials, suggest_micro_changes
 from app.rag import Index
 
@@ -45,6 +43,12 @@ def load_course_into_session(course: str, exams_from: str | None):
             # dove pypdf non era installato.
             chunks = load_course(course_path(course), exams_from)
         S.chunks = chunks
+        S.course_has_material = any(
+            file.is_file() and file.suffix.lower() in {".pptx", ".pdf", ".docx", ".md", ".txt"}
+            and "materials_update_bench" not in file.parts
+            and file.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}
+            for file in course_path(course).rglob("*")
+        )
         S.index = Index(chunks) if chunks else None
         S.lessons = build_lessons(chunks) if chunks else []
         S.concepts = extract_concepts(chunks) if chunks else []
@@ -72,37 +76,6 @@ def course_selector():
             help=config.get("exams_from_note", ""),
         ) else None
     return course, exams_from
-
-
-def render_slide_remaker():
-    st.subheader("Remaker delle slide")
-    st.write("Analizza ogni lezione e propone miglioramenti puntuali per ogni slide.")
-
-    for lesson in S.get("lessons", []):
-        with st.expander(f"{lesson.title} · {len(lesson.slide_ids)} slide"):
-            for topic in lesson.subtopics:
-                st.markdown(f"- {topic}")
-
-    if st.button("Analizza le slide", type="primary"):
-        with st.spinner("Il remaker sta analizzando tutte le slide…"):
-            S.slide_corrections = review_slides(S.chunks)
-
-    corrections = S.get("slide_corrections", [])
-    if not corrections:
-        st.info("Avvia l'analisi per vedere le proposte di correzione.")
-        return
-
-    by_slide = defaultdict(list)
-    for correction in corrections:
-        by_slide[correction.slide_ref].append(correction)
-    st.metric("Proposte generate", len(corrections))
-    for slide_ref, proposals in by_slide.items():
-        with st.expander(slide_ref):
-            for number, proposal in enumerate(proposals, 1):
-                st.markdown(f"**{number}. Errore o limite**")
-                st.write(proposal.error)
-                st.markdown("**Correzione proposta**")
-                st.write(proposal.correction)
 
 
 def lesson_concepts(lesson):
@@ -162,33 +135,45 @@ def render_exam_reviewer(course: str, exams_from: str | None):
 
 
 def render_materials_update(course: str):
-    st.subheader("Materials Update Agent")
-    st.write("Uniforma il design delle presentazioni senza modificare il contenuto e prepara le micro-modifiche per approvazione.")
+    st.subheader("Revisore materiali")
+    st.write("Esamina presentazioni, PDF e documenti. Per i PPTX crea anche una versione con design uniforme; ogni modifica testuale resta in attesa della tua approvazione.")
     selected_root = Path(course_path(course))
-    root = selected_root if list(selected_root.rglob("*.pptx")) else Path(ingest.DATA_DIR)
+    root = selected_root
     st.caption(f"Cartella materiali: {root}")
 
     if st.button("Prepara il bench delle slide", type="primary"):
-        with st.spinner("Estraggo testi e immagini e creo le presentazioni modernizzate…"):
+        with st.spinner("Leggo i documenti e preparo il materiale revisionabile…"):
             S.materials_package = prepare_materials(root)
             S.material_changes = {}
 
     package = S.get("materials_package")
+    if package is not None and Path(package.data_dir).resolve() != selected_root.resolve():
+        S.materials_package = None
+        S.material_changes = {}
+        package = None
     if package is None:
-        st.info("Avvia la preparazione per leggere le presentazioni e creare il bench.")
+        st.info("Avvia la preparazione per leggere le presentazioni e i documenti del corso.")
         return
     if not package.lessons:
-        st.warning("Nessun file .pptx trovato nella cartella /data.")
+        st.warning("Non ho trovato file PPTX, PDF, DOCX, Markdown o TXT nel corso selezionato.")
         return
 
-    st.success(f"{len(package.lessons)} lezioni modernizzate. Gli originali non sono stati modificati.")
+    st.success(f"{len(package.lessons)} materiali indicizzati. Gli originali non sono stati modificati.")
     lesson = st.selectbox("Lezione", package.lessons, format_func=lambda item: item.name)
     st.markdown("**Sottoargomenti**")
     for topic in lesson.subtopics:
         st.markdown(f"- {topic}")
-    st.download_button("Scarica PPTX modernizzato", Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
+    if lesson.source_format == "pptx":
+        st.download_button("Scarica PPTX con design uniforme", Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
+    else:
+        st.caption(f"Formato {lesson.source_format.upper()}: l'originale resta intatto; le modifiche approvate si applicano alla copia del bench.")
+        if lesson.source_format != "pdf":
+            st.download_button("Scarica copia del documento", Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
 
-    slide = st.selectbox("Slide da analizzare", lesson.slides, format_func=lambda item: f"Slide {item.number}: {item.title or 'senza titolo'}")
+    unit_name = "Slide" if lesson.source_format == "pptx" else "Pagina / sezione"
+    slide = st.selectbox(unit_name, lesson.slides, format_func=lambda item: f"{unit_name} {item.number}: {item.title or 'senza titolo'}")
+    with st.expander("Testo estratto"):
+        st.text(slide.text)
     if st.button("Suggerisci modifiche", type="primary"):
         with st.spinner("L'agente sta cercando solo micro-modifiche…"):
             S.material_changes[slide.number] = suggest_micro_changes(lesson, slide, package.syllabus, package.expected)
@@ -209,13 +194,17 @@ def render_materials_update(course: str):
             approve, reject, _ = st.columns([1, 1, 5])
             if approve.button("Approva", key=f"material-approve-{change.id}"):
                 if approve_change(package, change):
-                    st.success("Slide aggiornata nel bench.")
+                    st.success("Copia revisionata aggiornata; l'originale è rimasto intatto.")
                 else:
                     st.error("Non ho trovato il testo originale nella slide modernizzata.")
                 st.rerun()
             if reject.button("Rifiuta", key=f"material-reject-{change.id}"):
                 change.status = "rejected"
                 st.rerun()
+    if lesson.source_format == "pdf":
+        reviewed = Path(lesson.bench_path).with_suffix(".reviewed.md")
+        if reviewed.exists():
+            st.download_button("Scarica copia testuale revisionata", reviewed.read_bytes(), file_name=reviewed.name)
 
 
 def render_student():
@@ -252,7 +241,7 @@ else:
     if st.button("Carica corso", type="primary") or S.get("course_key") != (course, exams_from):
         load_course_into_session(course, exams_from)
 
-    if not S.get("chunks"):
+    if not S.get("chunks") and not S.get("course_has_material"):
         st.warning("Carica un corso per iniziare.")
         st.stop()
     if ingest.WARNINGS:
@@ -262,19 +251,16 @@ else:
     st.subheader("Scegli l'agente")
     agent = st.selectbox("Agente", [
         "Revisore esami",
-        "Remaker delle slide",
+        "Revisore materiali",
         "Creatore di survey",
-        "Materials Update Agent",
     ])
 
     if agent == "Revisore esami":
         render_exam_reviewer(course, exams_from)
-    elif agent == "Remaker delle slide":
-        render_slide_remaker()
+    elif agent == "Revisore materiali":
+        render_materials_update(course)
     elif agent == "Creatore di survey":
         render_survey_creator()
-    else:
-        render_materials_update(course)
 
 if llm.is_online() and llm.ERRORS:
     st.sidebar.warning(f"Sono state usate {llm.FALLBACKS} risposte di riserva.")

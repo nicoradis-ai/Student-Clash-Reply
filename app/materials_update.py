@@ -39,10 +39,11 @@ class SlideAsset:
     title: str
     blocks: list[SlideBlock] = field(default_factory=list)
     image_shapes: list[int] = field(default_factory=list)
+    plain_text: str = ""
 
     @property
     def text(self) -> str:
-        return "\n\n".join(block.text for block in self.blocks if block.text.strip())
+        return self.plain_text or "\n\n".join(block.text for block in self.blocks if block.text.strip())
 
 
 @dataclass
@@ -52,6 +53,7 @@ class LessonAsset:
     bench_path: str
     slides: list[SlideAsset]
     subtopics: list[str]
+    source_format: str = "pptx"
 
 
 @dataclass
@@ -150,6 +152,41 @@ def _extract_presentation(path: Path) -> list[SlideAsset]:
     return slides
 
 
+def _extract_document(path: Path) -> list[SlideAsset]:
+    """Estrae unità revisionabili da PDF, DOCX, Markdown e testo semplice."""
+    suffix = path.suffix.lower()
+    pages: list[str] = []
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+        pages = [page.extract_text() or "" for page in PdfReader(str(path)).pages]
+    elif suffix == ".docx":
+        from docx import Document
+        document = Document(str(path))
+        paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        paragraphs.extend(" | ".join(cell.text for cell in row.cells) for table in document.tables for row in table.rows)
+        pages = ["\n".join(paragraphs)]
+    elif suffix == ".md":
+        content = path.read_text(encoding="utf-8-sig")
+        pages = re.split(r"\n\s*(?:-{3,}|_{3,}|\*{3,})\s*\n", content)
+        if len(pages) == 1:
+            pages = re.split(r"(?=^#{1,2}\s)", content, flags=re.M)
+    elif suffix == ".txt":
+        content = path.read_text(encoding="utf-8-sig")
+        pages = content.split("\f")
+        if len(pages) == 1:
+            pages = [content]
+    else:
+        return []
+
+    assets = []
+    for number, text in enumerate(pages, 1):
+        text = text.strip()
+        title_match = re.search(r"^\s{0,3}#{1,6}\s+(.+)$", text, re.M)
+        title = title_match.group(1).strip() if title_match else f"{path.stem} · unità {number}"
+        assets.append(SlideAsset(number, str(path), title, plain_text=text))
+    return assets
+
+
 def _offline_subtopics(slides: list[SlideAsset]) -> list[str]:
     topics = []
     for slide in slides:
@@ -235,36 +272,46 @@ def _modernize(source: Path, output: Path, assets: list[SlideAsset]) -> dict:
 
 
 def prepare_materials(data_dir: str | Path, output_dir: str | Path | None = None) -> MaterialsPackage:
-    """Scopre, ordina senza distruggere gli originali e modernizza tutti i PPTX."""
+    """Scopre PPTX, PDF, DOCX, Markdown e TXT; il restyling è specifico dei PPTX."""
     root = Path(data_dir)
     output = Path(output_dir) if output_dir else root / "materials_update_bench"
     output.mkdir(parents=True, exist_ok=True)
     # Il bench è generato sotto la cartella dei materiali, ma non deve essere
     # riletto come sorgente al giro successivo.
     output_resolved = output.resolve()
+    supported = {".pptx", ".pdf", ".docx", ".md", ".txt"}
     files = sorted(
-        (path for path in root.rglob("*.pptx") if output_resolved not in path.resolve().parents),
+        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in supported
+         and output_resolved not in path.resolve().parents
+         and path.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}),
         key=_sort_key,
     )
     syllabus = _read_first(root, ("programma.txt", "syllabus.md"))
     expected = _read_first(root, ("requisiti_attesi.txt",))
     lessons = []
     for index, source in enumerate(files, 1):
-        source_assets = _extract_presentation(source)
+        source_assets = _extract_presentation(source) if source.suffix.lower() == ".pptx" else _extract_document(source)
+        if not source_assets:
+            continue
         label = _safe_name(source.stem)
-        ordered_name = f"{index}_{label}.pptx"
+        ordered_name = f"{index}_{label}{source.suffix.lower()}"
         ordered = output / "ordered" / ordered_name
         ordered.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, ordered)
         bench = output / "bench" / ordered_name
-        mapping = _modernize(source, bench, source_assets)
-        (bench.with_suffix(".mapping.json")).write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+        bench.parent.mkdir(parents=True, exist_ok=True)
+        if source.suffix.lower() == ".pptx":
+            mapping = _modernize(source, bench, source_assets)
+            (bench.with_suffix(".mapping.json")).write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+        else:
+            shutil.copy2(source, bench)
         lessons.append(LessonAsset(
-            name=ordered_name.removesuffix(".pptx"),
+            name=ordered_name.removesuffix(source.suffix.lower()),
             source_path=str(source),
             bench_path=str(bench),
             slides=source_assets,
             subtopics=_summarize(source_assets, syllabus, expected),
+            source_format=source.suffix.lower().lstrip("."),
         ))
     manifest = {
         "lessons": [lesson.name for lesson in lessons],
@@ -294,23 +341,68 @@ def suggest_micro_changes(lesson: LessonAsset, slide: SlideAsset, syllabus: str,
 
 
 def approve_change(package: MaterialsPackage, change: MicroChange) -> bool:
-    """Applica una modifica approvata alla slide del bench, lasciando intatta la sorgente."""
+    """Aggiorna solo il file revisionato, mai l'originale."""
     lesson = next((item for item in package.lessons if item.name == change.lesson), None)
     if lesson is None:
         return False
     slide = next((item for item in lesson.slides if item.number == change.slide_number), None)
     if slide is None:
         return False
-    presentation = Presentation(lesson.bench_path)
-    target = presentation.slides[slide.number - 1]
     replaced = False
-    for shape in target.shapes:
-        if not getattr(shape, "has_text_frame", False) or change.original_text not in shape.text:
-            continue
-        shape.text_frame.text = shape.text.replace(change.original_text, change.proposed_text, 1)
-        replaced = True
-        break
+    if lesson.source_format == "pptx":
+        presentation = Presentation(lesson.bench_path)
+        target = presentation.slides[slide.number - 1]
+        for shape in target.shapes:
+            if not getattr(shape, "has_text_frame", False) or change.original_text not in shape.text:
+                continue
+            shape.text_frame.text = shape.text.replace(change.original_text, change.proposed_text, 1)
+            replaced = True
+            break
+        if replaced:
+            presentation.save(lesson.bench_path)
+    elif lesson.source_format in {"md", "txt"}:
+        bench = Path(lesson.bench_path)
+        content = bench.read_text(encoding="utf-8-sig")
+        if change.original_text in content:
+            bench.write_text(content.replace(change.original_text, change.proposed_text, 1), encoding="utf-8")
+            replaced = True
+    elif lesson.source_format == "docx":
+        from docx import Document
+        document = Document(lesson.bench_path)
+        paragraphs = list(document.paragraphs)
+        paragraphs.extend(
+            paragraph
+            for table in document.tables
+            for row in table.rows
+            for cell in row.cells
+            for paragraph in cell.paragraphs
+        )
+        for paragraph in paragraphs:
+            full_text = "".join(run.text for run in paragraph.runs)
+            if change.original_text not in full_text:
+                continue
+            updated = full_text.replace(change.original_text, change.proposed_text, 1)
+            if paragraph.runs:
+                paragraph.runs[0].text = updated
+                for run in paragraph.runs[1:]:
+                    run.text = ""
+            else:
+                paragraph.text = updated
+            replaced = True
+            break
+        if replaced:
+            document.save(lesson.bench_path)
+    elif lesson.source_format == "pdf":
+        # PDF non è riscritto in-place: conserva la pagina originale e genera
+        # una copia testuale revisionabile con le modifiche approvate.
+        revised = Path(lesson.bench_path).with_suffix(".reviewed.md")
+        if not revised.exists():
+            body = "\n\n".join(f"## Pagina {item.number}\n\n{item.text}" for item in lesson.slides)
+            revised.write_text(f"# {lesson.name} — versione revisionata\n\n{body}\n", encoding="utf-8")
+        content = revised.read_text(encoding="utf-8")
+        if change.original_text in content:
+            revised.write_text(content.replace(change.original_text, change.proposed_text, 1), encoding="utf-8")
+            replaced = True
     if replaced:
-        presentation.save(lesson.bench_path)
         change.status = "approved"
     return replaced

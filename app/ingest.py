@@ -74,9 +74,15 @@ def course_path(course: str) -> Path:
 
 
 def list_courses(root: str | Path = DATA_DIR) -> list[str]:
-    """Corsi con almeno un file di materiale (le cartelle ancora vuote non compaiono)."""
+    """Corsi con almeno un file supportato di materiale didattico."""
     def has_material(p: Path) -> bool:
-        return any(f.suffix.lower() in (".md", ".pdf") for d in ("slides", "exams") for f in (p / d).glob("*"))
+        supported = {".md", ".pdf", ".pptx", ".docx", ".txt"}
+        return any(
+            f.is_file() and f.suffix.lower() in supported
+            and "materials_update_bench" not in f.parts
+            and f.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}
+            for f in p.rglob("*")
+        )
     root = Path(root)
     if not root.is_dir():
         return []
