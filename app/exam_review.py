@@ -13,7 +13,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 
-from .ingest import exam_date
+from .ingest import BOILERPLATE, exam_date
 from .llm import chat_json
 from .models import Chunk
 from .rag import Index, cite
@@ -24,8 +24,6 @@ ISA_MARKERS = {
     "MIPS": r"(?:\bmips\b|\$[tsav]\d\b|\$v0\b|\bsyscall\b)",
     "RISC-V": r"(?:\brisc-?v\b|\becall\b|\bx(?:[12]?\d|3[01])\b)",
 }
-BOILERPLATE = re.compile(r"cognome|matricola|consultare|tempo:|risposte corrette|risposta (?:aperta|chiusa)|"
-                         r"sino a \d+ punti|calcolatori elettronici|esame del", re.I)
 STOP = set("della delle degli dello dell nella nelle nel nei che con per una uno sono essere come quale quali "
            "quanti cosa sia dato data dati siano viene vengono questo questa ogni".split())
 
