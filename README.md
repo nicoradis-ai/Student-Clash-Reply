@@ -23,25 +23,17 @@ Nei PDF ogni pagina è un blocco (citato come `<file> p.N`). Per i temi d'esame 
 
 Se OpenAI non risponde, l'app usa le risposte di riserva e lo dice in rosso nella barra laterale. Lo stato (errori, embedding passati a offline) vale per tutto il processo: **se cambi chiave o torna la rete, riavvia streamlit**.
 
-## Script della demo
+## Script della demo ("The Lazy Prof", ADR 0007)
 
-1. **Docente · Mappa dei concetti**: conferma i concetti estratti (accordo con il docente).
-2. **Varianti da approvare**: "Genera coppie di verifica", poi Approva/Scarta ogni variante (con le fonti citate).
-3. **Classe e metriche**: "Simula una verifica", poi mostra il transfer gap (tipici contro varianti) e l'indice di copertura (slide contro punti d'esame).
-4. **Disallineamenti**: "Analizza": per ogni concetto critico, cosa significa e tre suggerimenti (slide, esame, studenti).
-5. **Studente**: rispondi a una variante, ricevi un feedback che guida senza dare la soluzione e vedi cosa ripassare.
+1. **Professore → scegli il corso → Carica corso.** Il filtro "Usa solo gli esami dal …" esclude gli appelli su un'architettura diversa da quella delle slide.
+2. **Creatore di survey**: scegli una lezione, "Crea survey per questa lezione", poi Approva/Scarta le varianti (ADR 0003). Senza varianti approvate non si misura nulla.
+3. **Diagnosi transfer gap**: "Simula una classe di 20 studenti" e mostra il transfer gap per concetto (tipiche contro varianti) e la distanza insegnato ↔ testato.
+4. **Revisore esami**: esercizi d'esame ricalcabili dagli appelli vecchi o su un'architettura diversa dalle slide, con il confronto prima/dopo. Le motivazioni citano il transfer gap della Diagnosi.
+5. **Revisore materiali**: "Ammoderna" rinnova le slide in `data/<corso>/new_slides/` (ignorata da git), poi micro-modifiche da approvare.
+6. **Studente**: risponde alla coppia tipica + variante di una survey approvata e riceve un feedback che guida senza dare la soluzione.
 
-Le risposte dell'LLM sono salvate in `.cache/`: fai un giro completo online prima della presentazione e la demo regge anche senza rete.
+Il corso `data/esempio-poo/` (fittizio, in markdown) è il piano B: funziona anche offline e senza PDF.
 
+Formati dei nomi d'esame riconosciuti per la data: `YYYY_MM_DD`, `YYYYMMDD`, `DDMMYY` (es. `040723.pdf` = luglio 2023).
 
-## Architettura a tre agenti (ADR 0006)
-
-```
-app/agents/base.py           CourseContext, Proposal, interfaccia Agent, ctx.focus()
-app/agents/materiale.py      Agente 1 · revisione slide
-app/agents/esercitazioni.py  Agente 2 · allineamento esercitazioni (cartella exercises/ del corso)
-app/agents/esami.py          Agente 3 · revisione esami
-app/orchestrator.py          build_context() + run_agents() in parallelo
-```
-
-Flusso docente: 1 · Diagnosi (transfer gap per concetto) → 2 · Tre agenti → 3 · Piano approvato.
+Nota: `app/orchestrator.py` e `app/agents/` (ADR 0006) restano nel codice ma la UI attuale non li usa; vedi `.scratch/ai-on-campus/still-to-do.md`.

@@ -428,15 +428,16 @@ def prepare_materials(data_dir: str | Path, output_dir: str | Path | None = None
     output = Path(output_dir) if output_dir else root / "new_slides"
     output_resolved = output.resolve()
     supported = {".pptx", ".pdf", ".docx", ".md", ".txt"}
+    slides_dir = root / "slides" if (root / "slides").is_dir() else root  # solo le lezioni, non esami o programma
     files = sorted(
-        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in supported
+        (path for path in slides_dir.rglob("*") if path.is_file() and path.suffix.lower() in supported
          and output_resolved not in path.resolve().parents
          and "new_slides" not in path.parts
          and path.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}),
         key=_sort_key,
     )
-    syllabus = _read_first(root, ("programma.txt", "syllabus.md"))
-    expected = _read_first(root, ("requisiti_attesi.txt",))
+    syllabus = _read_first(root, ("program.txt", "programma.txt", "syllabus.md"))
+    expected = _read_first(root, ("expected_results.txt", "requisiti_attesi.txt"))
     lessons = []
     for source in files:
         source_assets = _extract_presentation(source) if source.suffix.lower() == ".pptx" else _extract_document(source)

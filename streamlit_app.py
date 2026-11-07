@@ -1,6 +1,7 @@
 """The Lazy Prof: interfaccia semplice per studenti e professori."""
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from app import ingest, llm
@@ -16,7 +17,9 @@ from app.materials_update import (
     preview_change,
     suggest_micro_changes,
 )
+from app.metrics import concept_metrics, coverage_distance
 from app.rag import Index
+from app.simulate import simulate_class
 
 
 st.set_page_config(page_title="The Lazy Prof", page_icon="🎓", layout="wide")
@@ -229,6 +232,39 @@ def render_materials_update(course: str):
                 st.rerun()
 
 
+def render_diagnosis():
+    """Metrica principale (ADR 0001): transfer gap per concetto, dalle risposte alle coppie tipico + variante."""
+    st.subheader("Diagnosi: transfer gap")
+    st.write("Per ogni concetto confronta il punteggio sulle survey tipiche con quello sulle varianti. "
+             "Un gap alto vuol dire che si ricalca lo schema senza aver capito il concetto.")
+    approved = [e for e in S.get("exercises", []) if e.kind == "variant" and e.status == "approved"]
+    if not approved:
+        st.info("Approva almeno una variante nel Creatore di survey, poi torna qui per simulare la classe.")
+    col, _ = st.columns([2, 5])
+    if col.button("Simula una classe di 20 studenti", type="primary", disabled=not approved):
+        S.answers = simulate_class(S.exercises)
+    answers = list(S.get("answers", [])) + list(S.get("live_answers", []))
+    if not answers:
+        st.caption("Nessuna risposta ancora: simula la classe o fai rispondere gli studenti dall'Area studente.")
+        return
+    names = {c.id: c.name for c in S.get("concepts", [])}
+    ms = [m for m in concept_metrics(S.concepts, S.chunks, S.exercises, answers) if m.typical_score or m.variant_score]
+    if not ms:
+        st.caption("Le risposte non riguardano ancora nessun concetto con survey approvate.")
+        return
+    df = pd.DataFrame([{"Concetto": names.get(m.concept_id, m.concept_id), "Tipiche": m.typical_score,
+                        "Varianti": m.variant_score, "Transfer gap": m.transfer_gap,
+                        "Peso slide": m.teaching_weight, "Peso esame": m.exam_weight} for m in ms])
+    a, b, c = st.columns(3)
+    worst = df.sort_values("Transfer gap", ascending=False).iloc[0]
+    a.metric("Gap più alto", f"{worst['Transfer gap']:+.0%}", worst["Concetto"])
+    b.metric("Risposte", len(answers))
+    c.metric("Distanza insegnato ↔ testato", f"{coverage_distance(ms):.0%}")
+    st.bar_chart(df.set_index("Concetto")[["Tipiche", "Varianti"]], stack=False)
+    st.dataframe(df.style.format({k: "{:.0%}" for k in df.columns if k != "Concetto"}), hide_index=True)
+    st.caption("Il Revisore esami usa queste stesse risposte nelle sue motivazioni.")
+
+
 def render_student():
     st.header("Area studente")
     st.write("Qui compaiono solo le survey approvate dal professore.")
@@ -241,13 +277,20 @@ def render_student():
     names = {concept.id: concept.name for concept in S.get("concepts", [])}
     selected = st.selectbox("Survey", approved_variants, format_func=lambda e: names.get(e.concept_id, e.concept_id))
     st.markdown(f"### {names.get(selected.concept_id, selected.concept_id)}")
-    st.write(selected.prompt)
-    answer = st.text_area("La tua risposta")
-    if st.button("Invia risposta", type="primary") and answer.strip():
-        result = grade(selected, answer, student_id)
-        S.live_answers.append(result)
-        st.success(f"Punteggio: {result.score:.0%}")
-        st.write(result.feedback)
+    typical = next((e for e in S.exercises if e.id == selected.concept_id + "-typ"), None)
+    # coppia tipica + variante: senza entrambe non si misura il transfer gap
+    for label, ex in (("Domanda 1", typical), ("Domanda 2", selected)):
+        if ex is None:
+            continue
+        with st.container(border=True):
+            st.markdown(f"**{label}**")
+            st.write(ex.prompt)
+            answer = st.text_area("La tua risposta", key=f"student-ans-{ex.id}")
+            if st.button("Invia risposta", type="primary", key=f"student-send-{ex.id}") and answer.strip():
+                result = grade(ex, answer, student_id)
+                S.live_answers.append(result)
+                st.success(f"Punteggio: {result.score:.0%}")
+                st.write(result.feedback)
 
 
 st.title("The Lazy Prof")
@@ -272,12 +315,15 @@ else:
     st.divider()
     st.subheader("Scegli l'agente")
     agent = st.selectbox("Agente", [
+        "Diagnosi transfer gap",
         "Revisore esami",
         "Revisore materiali",
         "Creatore di survey",
     ])
 
-    if agent == "Revisore esami":
+    if agent == "Diagnosi transfer gap":
+        render_diagnosis()
+    elif agent == "Revisore esami":
         render_exam_reviewer(course, exams_from)
     elif agent == "Revisore materiali":
         render_materials_update(course)
