@@ -56,6 +56,31 @@ def _cache_path(kind: str, payload: str) -> Path:
     return CACHE / kind / f"{h}.json"
 
 
+def _read_cache(path: Path):
+    """Legge una cache JSON; una cache vuota/corrotta viene invalidata."""
+    try:
+        if not path.exists():
+            return None
+        if path.stat().st_size == 0:
+            path.unlink(missing_ok=True)
+            return None
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+
+def _write_cache(path: Path, data) -> None:
+    """Scrive prima su un file temporaneo per non lasciare JSON parziali."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
 def _record(err: Exception, where: str) -> None:
     global FALLBACKS
     FALLBACKS += 1
@@ -69,8 +94,9 @@ def chat_json(system: str, user: str, fallback):
     if not is_online():
         return fallback()
     path = _cache_path("chat", MODEL + system + user)
-    if path.exists():
-        return json.loads(path.read_text())
+    cached = _read_cache(path)
+    if cached is not None:
+        return cached
     last = None
     for _ in range(2):  # un retry
         try:
@@ -82,8 +108,7 @@ def chat_json(system: str, user: str, fallback):
                 temperature=0.4,
             )
             data = json.loads(resp.choices[0].message.content)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, ensure_ascii=False))
+            _write_cache(path, data)
             return data
         except Exception as e:
             last = e
@@ -105,12 +130,12 @@ def embeds_online() -> bool:
 
 def _embed_batch(texts: list[str]) -> list[list[float]]:
     path = _cache_path("embed", EMBED_MODEL + "\x00".join(texts))
-    if path.exists():
-        return json.loads(path.read_text())
+    cached = _read_cache(path)
+    if cached is not None:
+        return cached
     resp = _get_client().embeddings.create(model=EMBED_MODEL, input=[t[:8000] or " " for t in texts])
     vecs = [d.embedding for d in resp.data]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(vecs))
+    _write_cache(path, vecs)
     return vecs
 
 
