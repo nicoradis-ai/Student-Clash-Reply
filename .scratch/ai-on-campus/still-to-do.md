@@ -12,3 +12,5 @@ Cose decise o emerse ma lasciate fuori dalla demo, per continuare a sviluppare l
 - [ ] Database vettoriale e persistenza al posto della memoria e della cache.
 - [ ] Level 3: sistema multi-agente, knowledge graph dei concetti, campagna di lancio.
 - [ ] Validazione con un docente vero su un corso vero.
+- [ ] Ricollegare `orchestrator` e `app/agents/` alla UI "Lazy Prof" (oggi `exam_ui._context` ricostruisce `CourseContext` a mano invece di usare `build_context`). Vedi ADR 0007.
+- [ ] Unire `material_review` (guidato da gap ed esami) e `materials_update` (restyling): passare i concetti focus al restyling, così le micro-modifiche nascono dal transfer gap.

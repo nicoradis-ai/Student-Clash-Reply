@@ -1,6 +1,6 @@
 # 0006 – Tre agenti in parallelo: materiale, esercitazioni, esami
 
-Stato: accettato (2026-11-07)
+Stato: sostituito per la UI dalla 0007 (2026-11-07)
 
 ## Contesto
 La prima versione mostrava come prima schermata un elenco di lezioni e correzioni brevi slide per slide, su

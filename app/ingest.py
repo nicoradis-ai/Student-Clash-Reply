@@ -66,8 +66,17 @@ def course_config(course_dir: str) -> dict:
 
 
 def exam_date(name: str) -> str | None:
+    """Data "YYYY-MM" dal nome del file d'esame. Formati: YYYY_MM_..., YYYYMMDD, DDMMYY (es. 040723 = 4/7/2023)."""
     m = DATE_RE.match(name)
-    return f"{m.group(1)}-{int(m.group(2)):02d}" if m else None
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}"
+    m = re.match(r"^(\d{4})(\d{2})(\d{2})(?!\d)", name)
+    if m and m.group(1).startswith(("19", "20")) and 1 <= int(m.group(2)) <= 12 and 1 <= int(m.group(3)) <= 31:
+        return f"{m.group(1)}-{m.group(2)}"
+    m = re.match(r"^(\d{2})(\d{2})(\d{2})(?!\d)", name)
+    if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+        return f"20{m.group(3)}-{m.group(2)}"
+    return None
 
 
 def course_path(course: str) -> Path:

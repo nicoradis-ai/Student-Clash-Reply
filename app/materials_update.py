@@ -520,8 +520,8 @@ def prepare_materials(
         (path for path in slides_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".pptx"),
         key=_sort_key,
     ) if slides_dir.is_dir() else []
-    syllabus = _read_first(root, ("programma.txt", "syllabus.md"))
-    expected = _read_first(root, ("requisiti_attesi.txt",))
+    syllabus = _read_first(root, ("program.txt", "programma.txt", "syllabus.md"))
+    expected = _read_first(root, ("expected_results.txt", "requisiti_attesi.txt"))
     lessons = []
     total_files = len(files)
     if on_progress:

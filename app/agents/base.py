@@ -44,6 +44,12 @@ class CourseContext:
 
 def evidence(m: ConceptMetrics) -> str:
     """Frase standard con i numeri della sonda, da mettere in `Proposal.rationale`."""
+    weights = f"peso nelle slide {m.teaching_weight:.0%} contro peso nei punti d'esame {m.exam_weight:.0%}."
+    if not m.typical_score and not m.variant_score:  # nessuna risposta: niente "gap +0%" fuorviante
+        return "Transfer gap: nessuna risposta ancora; " + weights
+    if not m.transfer_gap and not (m.typical_score and m.variant_score):  # risposte su un solo lato
+        side = "alle varianti" if m.typical_score else "alle survey tipiche"
+        return f"Transfer gap: nessuna risposta {side} ancora; " + weights
     return (f"Transfer gap {m.transfer_gap:+.0%} (tipici {m.typical_score:.0%}, varianti {m.variant_score:.0%}); "
             f"peso nelle slide {m.teaching_weight:.0%} contro peso nei punti d'esame {m.exam_weight:.0%}.")
 
