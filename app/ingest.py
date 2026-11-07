@@ -95,6 +95,16 @@ def load_course(course_dir: str, exams_from: str | None = None) -> list[Chunk]:
         elif f.suffix.lower() == ".md":
             for i, block in enumerate(_md_blocks(f, exam=False)):
                 chunks.append(Chunk(id=f"slides/{f.name}#{i}", source="slide", ref=f"{f.stem} slide {i + 1}", text=block))
+    for f in sorted((base / "exercises").glob("*")):  # esercitazioni (facoltative)
+        if f.suffix.lower() == ".pdf":
+            for i, page in enumerate(_pdf_pages(f)):
+                if page.strip():
+                    chunks.append(Chunk(id=f"exercises/{f.name}#{i}", source="exercise",
+                                        ref=f"{f.stem} p.{i + 1}", text=page))
+        elif f.suffix.lower() == ".md":
+            for i, block in enumerate(_md_blocks(f, exam=False)):
+                chunks.append(Chunk(id=f"exercises/{f.name}#{i}", source="exercise",
+                                    ref=f"{f.stem}, esercizio {i + 1}", text=block))
     for f in sorted((base / "exams").glob("*")):
         d = exam_date(f.name)
         if exams_from and d and d < exams_from:
