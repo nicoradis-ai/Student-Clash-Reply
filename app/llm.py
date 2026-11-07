@@ -11,6 +11,22 @@ from pathlib import Path
 
 import numpy as np
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Legge KEY=valore da .env (ignorato da git) senza sovrascrivere le variabili già impostate."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip().removeprefix("export ").strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 CACHE = Path(os.getenv("CACHE_DIR", ".cache"))
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")

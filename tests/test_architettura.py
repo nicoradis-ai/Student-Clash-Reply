@@ -101,3 +101,15 @@ def test_assign_chunks_reuses_index_cache(monkeypatch):
     extract_concepts(chunks)
     chunk_batches = [b for b in seen if b and b[0].startswith("testo")]
     assert len(set(chunk_batches)) == 1  # stessi lotti di Index: in produzione sono cache hit
+
+
+def test_dotenv_does_not_override(tmp_path, monkeypatch):
+    f = tmp_path / ".env"
+    f.write_text('﻿# commento\nOPENAI_MODEL="gpt-test"\nexport FOO_X=1\nOPENAI_API_KEY=da-file\n', encoding="utf-8")
+    monkeypatch.setenv("OPENAI_API_KEY", "gia-impostata")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("FOO_X", raising=False)
+    llm._load_dotenv(str(f))
+    import os
+    assert os.environ["OPENAI_MODEL"] == "gpt-test" and os.environ["FOO_X"] == "1"
+    assert os.environ["OPENAI_API_KEY"] == "gia-impostata"
