@@ -6,7 +6,8 @@ from app import llm
 from app.concepts import extract_concepts
 from app.exercises import make_pair
 from app.grading import grade
-from app.ingest import course_config, list_courses, load_course
+from app import ingest
+from app.ingest import course_config, course_path, list_courses, load_course
 from app.insights import misalignments, study_advice
 from app.metrics import concept_metrics, coverage_distance
 from app.rag import Index
@@ -20,8 +21,11 @@ st.sidebar.title("Sonda di transfer")
 if not llm.is_online():
     st.sidebar.warning("Modalità offline: niente OPENAI_API_KEY, uso risposte di riserva.")
 courses = list_courses()
+if not courses:
+    st.error(f"Nessun corso trovato in {ingest.DATA_DIR}. Ogni corso è una cartella con slides/ ed exams/.")
+    st.stop()
 course = st.sidebar.selectbox("Corso", courses)
-cfg = course_config(f"data/{course}")
+cfg = course_config(course_path(course))
 exams_from = None
 if cfg.get("exams_from"):
     if st.sidebar.checkbox(f"Solo esami dal {cfg['exams_from']}", value=True,
@@ -31,18 +35,32 @@ if cfg.get("exams_from"):
 
 @st.cache_data(show_spinner=False)
 def _load(course: str, exams_from):
-    return load_course(f"data/{course}", exams_from)
+    return load_course(course_path(course), exams_from)
 
 
 key = (course, exams_from)
 if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
-    with st.spinner("Leggo il materiale e costruisco l'indice…"):
-        S.key = key
+    with st.status("Carico il materiale del corso…", expanded=True) as box:
+        st.write("1/3 · Leggo slide ed esami (con molti PDF serve circa mezzo minuto)…")
         S.chunks = _load(course, exams_from)
+        n_s = sum(c.source == "slide" for c in S.chunks)
+        st.write(f"{n_s} pagine di slide, {len(S.chunks) - n_s} pagine d'esame.")
+        st.write("2/3 · Costruisco l'indice di ricerca (embedding)…")
         S.index = Index(S.chunks)
+        st.write("3/3 · Estraggo la mappa dei concetti…")
         S.concepts = extract_concepts(S.chunks)
         S.exercises, S.answers, S.live_answers, S.mis = [], [], [], None
+        S.key = key
+        ok = bool(S.chunks and S.concepts)
+        box.update(label=f"Materiale caricato: {len(S.chunks)} blocchi, {len(S.concepts)} concetti" if ok
+                   else "Caricamento incompleto", state="complete" if ok else "error", expanded=not ok)
 st.sidebar.caption(f"{len(S.get('chunks', []))} blocchi di materiale · {len(S.get('concepts', []))} concetti")
+if ingest.WARNINGS:
+    st.sidebar.error("Problemi nella lettura dei file:\n\n" + "\n\n".join(ingest.WARNINGS[:5]))
+if not S.get("chunks"):
+    st.error("Non ho trovato testo nel materiale di questo corso. Controlla che le librerie siano installate "
+             "(`pip install -r requirements.txt`, serve pypdf) e che i file siano in slides/ ed exams/.")
+    st.stop()
 
 view = st.sidebar.radio("Vista", ["Docente", "Studente"])
 
