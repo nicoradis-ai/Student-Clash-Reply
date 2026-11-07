@@ -1,0 +1,48 @@
+Porte e circuiti logici elementari (10 ore)
+- Richiami di logica booleana
+- Porte logiche combinatorie: NAND, NOR, NOT, AND, OR, XOR, MUX
+- Proprietà porte logiche: funzione, tabella verità, simbolo, equazione booleana
+- Componenti sequenziali: flip-flop, latch, registri
+- Contatori e FSM: diagrammi di stato, tabelle di transizione
+
+Circuiti di base e macchine a stati finiti (15 ore)
+- Reti logiche combinatorie: minimizzazione, tecniche di sintesi di circuiti base
+- Sintesi di FSM elementari
+- Esempi di applicazioni di FSM
+- Sistemi di controllo complesso (ASM chart)
+- Unità di controllo e data path, circuiti aritmetici
+
+Cenni ai principi di funzionamento dei transistor MOS e porte (10 ore)
+- Struttura e funzionamento dei transistor MOS
+- Modelli di circuiti con transistori MOS
+- Tecnologie per circuiti integrati MOS: CMOS
+- Implementazione porte logiche CMOS
+- Interconnessioni
+- Caratteristiche di prestazioni dei circuiti MOS: velocità, potenza, consumo
+- Tempistiche, ottimizzazioni, clock
+
+Memorie: circuiti, architettura, funzionamento (10 ore)
+- Categorie, definizioni
+- DRAM: struttura, operazioni, segnali, funzionamento DRAM
+- SRAM: struttura, operazioni, segnali, funzionamento SRAM
+- Confronto DRAM-SRAM, memorie con più porte, CAM, TCAM, applicazioni tipiche
+- Memorie non-volatili: ROM, EPROM, EEPROM, FLASH, memorie seriali
+
+Linguaggi di descrizione dell'hardware (Verilog) (15 ore)
+- Linguaggio Verilog: concetti e strutture dati per la descrizione e simulazione di circuiti combinatori e sequenziali
+- Modalità di descrizione ROM e SRAM in Verilog
+- Introduzione a testbench
+- Esempi di descrizione e simulazione Verilog
+
+Flusso di progettazione e produzione dei circuiti VLSI (10 ore)
+- Introduzione ai circuiti integrati e tecnologie VLSI, Moore
+- Fasi di progettazione VLSI: livello logico, sintesi RTL, simulazione, place&route, verifica fisica
+- Automazione della progettazione (EDA)
+- Flussi di progettazione: full custom, standard cell, FPGA. Demo su FPGA
+- Aspetti di sistema (generazione e distribuzione clock, distribuzione alimentazione, interconnessioni, bus parallelo/seriale, IO, IO strength, PoR)
+
+Progettazione e test di sistemi elettronici digitali (10 ore)
+- Cenni di conversione A/D e D/A
+- Dalle specifiche di sistema alle specifiche di componenti
+- Test
+- Esempio di sistema complesso di elaborazione di segnali misti

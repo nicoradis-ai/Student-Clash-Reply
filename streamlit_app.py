@@ -9,7 +9,13 @@ from app.exercises import make_pair
 from app.grading import grade
 from app.ingest import course_config, course_path, list_courses, load_course
 from app.lessons import build_lessons
-from app.materials_update import approve_change, prepare_materials, suggest_micro_changes
+from app.materials_update import (
+    approve_change,
+    modernize_materials,
+    prepare_materials,
+    preview_change,
+    suggest_micro_changes,
+)
 from app.rag import Index
 
 
@@ -141,8 +147,8 @@ def render_materials_update(course: str):
     root = selected_root
     st.caption(f"Cartella materiali: {root}")
 
-    if st.button("Prepara il bench delle slide", type="primary"):
-        with st.spinner("Leggo i documenti e preparo il materiale revisionabile…"):
+    if st.button("Analizza materiali"):
+        with st.spinner("Leggo i documenti senza creare copie o file di output…"):
             S.materials_package = prepare_materials(root)
             S.material_changes = {}
 
@@ -158,17 +164,25 @@ def render_materials_update(course: str):
         st.warning("Non ho trovato file PPTX, PDF, DOCX, Markdown o TXT nel corso selezionato.")
         return
 
-    st.success(f"{len(package.lessons)} materiali indicizzati. Gli originali non sono stati modificati.")
+    st.success(f"{len(package.lessons)} materiali analizzati in memoria. Nessun file è stato creato o modificato.")
+    if st.button("Ammoderna il design e crea new_slides", type="primary"):
+        with st.spinner("Creo le copie modernizzate nella cartella new_slides…"):
+            modernize_materials(package)
+        st.success(f"Materiali generati in {package.output_dir}")
+        st.rerun()
+
     lesson = st.selectbox("Lezione", package.lessons, format_func=lambda item: item.name)
     st.markdown("**Sottoargomenti**")
     for topic in lesson.subtopics:
         st.markdown(f"- {topic}")
-    if lesson.source_format == "pptx":
-        st.download_button("Scarica PPTX con design uniforme", Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
+    modernized = Path(lesson.bench_path).is_file()
+    if modernized:
+        label = "Scarica PDF modernizzato" if lesson.source_format == "pdf" else (
+            "Scarica PPTX con design uniforme" if lesson.source_format == "pptx" else "Scarica copia del documento"
+        )
+        st.download_button(label, Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
     else:
-        st.caption(f"Formato {lesson.source_format.upper()}: l'originale resta intatto; le modifiche approvate si applicano alla copia del bench.")
-        if lesson.source_format != "pdf":
-            st.download_button("Scarica copia del documento", Path(lesson.bench_path).read_bytes(), file_name=Path(lesson.bench_path).name)
+        st.caption("Le proposte non generano file. Per creare l'output, usa il pulsante di ammodernamento.")
 
     unit_name = "Slide" if lesson.source_format == "pptx" else "Pagina / sezione"
     slide = st.selectbox(unit_name, lesson.slides, format_func=lambda item: f"{unit_name} {item.number}: {item.title or 'senza titolo'}")
@@ -185,26 +199,34 @@ def render_materials_update(course: str):
     for change in changes:
         with st.container(border=True):
             st.markdown(f"### Proposta · {change.status}")
-            left, right = st.columns(2)
-            left.markdown("**Prima**")
-            left.code(change.original_text)
-            right.markdown("**Proposta**")
-            right.code(change.proposed_text)
+            if change.status != "pending":
+                st.caption("Proposta già gestita: " + ("approvata" if change.status == "approved" else "rifiutata"))
+                continue
+            previews = preview_change(lesson, slide, change)
+            if previews is None:
+                st.warning("Non riesco a localizzare il testo nella pagina per produrre un confronto visuale. Nessun file è stato modificato.")
+            else:
+                left, right = st.columns(2)
+                left.markdown("**Slide attuale**")
+                left.image(previews[0], use_container_width=True)
+                right.markdown("**Anteprima con modifica**")
+                right.image(previews[1], use_container_width=True)
+            with st.expander("Testo e motivazione"):
+                st.markdown("**Originale**")
+                st.write(change.original_text)
+                st.markdown("**Proposta**")
+                st.write(change.proposed_text)
             st.caption(change.justification)
             approve, reject, _ = st.columns([1, 1, 5])
-            if approve.button("Approva", key=f"material-approve-{change.id}"):
+            if approve.button("Approva", key=f"material-approve-{change.id}", disabled=not modernized or previews is None):
                 if approve_change(package, change):
-                    st.success("Copia revisionata aggiornata; l'originale è rimasto intatto.")
+                    st.success("Solo la slide approvata è stata aggiornata in new_slides; le altre sono rimaste invariate.")
                 else:
-                    st.error("Non ho trovato il testo originale nella slide modernizzata.")
+                    st.error("Non ho trovato il testo originale nella slide modernizzata: nessun file è stato modificato.")
                 st.rerun()
             if reject.button("Rifiuta", key=f"material-reject-{change.id}"):
                 change.status = "rejected"
                 st.rerun()
-    if lesson.source_format == "pdf":
-        reviewed = Path(lesson.bench_path).with_suffix(".reviewed.md")
-        if reviewed.exists():
-            st.download_button("Scarica copia testuale revisionata", reviewed.read_bytes(), file_name=reviewed.name)
 
 
 def render_student():

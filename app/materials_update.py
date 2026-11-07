@@ -6,7 +6,7 @@ quando il professore chiede micro-modifiche.
 """
 from __future__ import annotations
 
-import json
+import io
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -88,7 +88,9 @@ MICRO_CHANGE_SYSTEM = (
     "NON stravolgere la slide e non riscrivere l'intero corso. Usa conoscenza generale quando utile, "
     "ma non affermare dettagli non verificabili. Rispondi solo JSON nel formato "
     "{\"changes\": [{\"original_text\": \"...\", \"proposed_text\": \"...\", "
-    "\"justification\": \"...\"}]}. Se non serve cambiare nulla, restituisci una lista vuota."
+    "\"justification\": \"...\"}]}. original_text deve essere una citazione breve, esatta e contigua "
+    "copiata dalla slide (preferibilmente una singola riga, massimo 15 parole), così da poterla localizzare. "
+    "Se non serve cambiare nulla, restituisci una lista vuota."
 )
 
 
@@ -271,55 +273,203 @@ def _modernize(source: Path, output: Path, assets: list[SlideAsset]) -> dict:
     return mapping
 
 
+def _modernize_pdf(source: Path, output: Path) -> None:
+    """Aggiunge un trattamento UX leggero senza rasterizzare il contenuto PDF."""
+    import pymupdf as fitz
+
+    document = fitz.open(source)
+    for page_number, page in enumerate(document, 1):
+        rect = page.rect
+        page.draw_rect(fitz.Rect(12, 12, rect.width - 12, rect.height - 12),
+                       color=(0.84, 0.88, 0.93), width=0.8, overlay=True)
+        page.draw_line(fitz.Point(20, 18), fitz.Point(72, 18),
+                       color=(0.12, 0.32, 0.62), width=2.5, overlay=True)
+        page.insert_text(fitz.Point(rect.width - 42, rect.height - 15), str(page_number),
+                         fontsize=8, fontname="helv", color=(0.35, 0.40, 0.48), overlay=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    document.save(output, garbage=4, deflate=True)
+    document.close()
+
+
+def _pdf_candidate_bytes(path: str | Path, page_number: int, original: str, proposed: str) -> bytes | None:
+    """Restituisce in memoria un PDF con la sola pagina selezionata aggiornata."""
+    import pymupdf as fitz
+
+    document = fitz.open(path)
+    try:
+        page = document[page_number - 1]
+        matches = page.search_for(original)
+        if not matches:
+            return None
+        area = matches[0]
+        page.add_redact_annot(area, fill=(1, 1, 1), cross_out=False)
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+        area = fitz.Rect(max(16, area.x0 - 1), max(14, area.y0 - 2),
+                         min(page.rect.width - 16, area.x1 + 4),
+                         min(page.rect.height - 18, area.y1 + 4))
+        size = 11
+        while size >= 6:
+            spare = page.insert_textbox(area, proposed, fontsize=size, fontname="helv",
+                                        color=(0.08, 0.14, 0.23), overlay=True)
+            if spare >= 0:
+                break
+            document.close()
+            document = fitz.open(path)
+            page = document[page_number - 1]
+            retry_matches = page.search_for(original)
+            if not retry_matches:
+                return None
+            page.add_redact_annot(retry_matches[0], fill=(1, 1, 1), cross_out=False)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+            size -= 1
+        if size < 6:
+            return None
+        return document.tobytes(garbage=4, deflate=True)
+    finally:
+        document.close()
+
+
+def _render_text_preview(text: str, title: str) -> bytes:
+    from PIL import Image, ImageDraw, ImageFont
+    import textwrap
+
+    image = Image.new("RGB", (1200, 675), "#f5f7fb")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((35, 30, 1165, 645), radius=20, fill="white", outline="#d8e0eb", width=2)
+    draw.rounded_rectangle((55, 50, 1145, 112), radius=12, fill="#142843")
+    draw.text((78, 68), title[:60], font=ImageFont.load_default(size=30), fill="white")
+    y = 145
+    for line in text.splitlines():
+        for part in textwrap.wrap(line, width=92) or [""]:
+            if y > 610:
+                break
+            draw.text((75, y), part, font=ImageFont.load_default(size=22), fill="#142843")
+            y += 30
+        if y > 610:
+            break
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _render_pptx_preview(
+    lesson: LessonAsset,
+    slide_asset: SlideAsset,
+    proposed_text: tuple[str, str] | None = None,
+    source_path: str | None = None,
+) -> bytes:
+    """Renderizza una slide PPTX con immagini e testo in una tela UX coerente."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    presentation = Presentation(source_path or lesson.source_path)
+    slide = presentation.slides[slide_asset.number - 1]
+    width, height = 1280, 720
+    scale_x = width / presentation.slide_width
+    scale_y = height / presentation.slide_height
+    image = Image.new("RGB", (width, height), "#f5f7fb")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, width, 84), fill="#142843")
+    draw.text((42, 24), slide_asset.title[:65] or f"Slide {slide_asset.number}",
+              font=ImageFont.load_default(size=30), fill="white")
+    replacement = proposed_text
+    replaced = False
+    for index, shape in enumerate(slide.shapes):
+        x0, y0 = int(shape.left * scale_x), int(shape.top * scale_y)
+        x1, y1 = int((shape.left + shape.width) * scale_x), int((shape.top + shape.height) * scale_y)
+        if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+            try:
+                from PIL import Image as PILImage
+                photo = PILImage.open(io.BytesIO(shape.image.blob)).convert("RGB")
+                photo.thumbnail((max(1, x1 - x0), max(1, y1 - y0)))
+                image.paste(photo, (x0, y0))
+            except Exception:
+                continue
+        elif getattr(shape, "has_text_frame", False) and shape.text.strip():
+            text = shape.text
+            if replacement and not replaced and replacement[0] in text:
+                text = text.replace(replacement[0], replacement[1], 1)
+                replaced = True
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=8, fill="white", outline="#d8e0eb", width=1)
+            draw.multiline_text((x0 + 12, y0 + 10), text, font=ImageFont.load_default(size=20),
+                                fill="#142843", spacing=6)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def preview_change(lesson: LessonAsset, slide: SlideAsset, change: MicroChange) -> tuple[bytes, bytes] | None:
+    """Immagini prima/dopo della specifica pagina o slide."""
+    updated = slide.text.replace(change.original_text, change.proposed_text, 1)
+    if lesson.source_format == "pdf":
+        import pymupdf as fitz
+        base = lesson.bench_path if Path(lesson.bench_path).exists() else lesson.source_path
+        candidate = _pdf_candidate_bytes(base, slide.number, change.original_text, change.proposed_text)
+        if candidate is None:
+            return None
+        with fitz.open(base) as current:
+            before = current[slide.number - 1].get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False).tobytes("png")
+        with fitz.open(stream=candidate, filetype="pdf") as revised:
+            after = revised[slide.number - 1].get_pixmap(matrix=fitz.Matrix(1.4, 1.4), alpha=False).tobytes("png")
+        return before, after
+    if lesson.source_format == "pptx":
+        current_deck = lesson.bench_path if Path(lesson.bench_path).exists() else lesson.source_path
+        before = _render_pptx_preview(lesson, slide, source_path=current_deck)
+        after = _render_pptx_preview(lesson, slide, (change.original_text, change.proposed_text), current_deck)
+        return before, after
+    return (
+        _render_text_preview(slide.text, f"{lesson.name} · slide {slide.number}"),
+        _render_text_preview(updated, f"Anteprima proposta · {lesson.name} · slide {slide.number}"),
+    )
+
+
 def prepare_materials(data_dir: str | Path, output_dir: str | Path | None = None) -> MaterialsPackage:
-    """Scopre PPTX, PDF, DOCX, Markdown e TXT; il restyling è specifico dei PPTX."""
+    """Analizza PPTX, PDF, DOCX, Markdown e TXT senza creare file di output."""
     root = Path(data_dir)
-    output = Path(output_dir) if output_dir else root / "materials_update_bench"
-    output.mkdir(parents=True, exist_ok=True)
-    # Il bench è generato sotto la cartella dei materiali, ma non deve essere
-    # riletto come sorgente al giro successivo.
+    output = Path(output_dir) if output_dir else root / "new_slides"
     output_resolved = output.resolve()
     supported = {".pptx", ".pdf", ".docx", ".md", ".txt"}
     files = sorted(
         (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in supported
          and output_resolved not in path.resolve().parents
+         and "new_slides" not in path.parts
          and path.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}),
         key=_sort_key,
     )
     syllabus = _read_first(root, ("programma.txt", "syllabus.md"))
     expected = _read_first(root, ("requisiti_attesi.txt",))
     lessons = []
-    for index, source in enumerate(files, 1):
+    for source in files:
         source_assets = _extract_presentation(source) if source.suffix.lower() == ".pptx" else _extract_document(source)
         if not source_assets:
             continue
         label = _safe_name(source.stem)
-        ordered_name = f"{index}_{label}{source.suffix.lower()}"
-        ordered = output / "ordered" / ordered_name
-        ordered.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, ordered)
-        bench = output / "bench" / ordered_name
-        bench.parent.mkdir(parents=True, exist_ok=True)
-        if source.suffix.lower() == ".pptx":
-            mapping = _modernize(source, bench, source_assets)
-            (bench.with_suffix(".mapping.json")).write_text(json.dumps(mapping, indent=2), encoding="utf-8")
-        else:
-            shutil.copy2(source, bench)
+        ordered_name = f"{len(lessons) + 1}_{label}{source.suffix.lower()}"
         lessons.append(LessonAsset(
             name=ordered_name.removesuffix(source.suffix.lower()),
             source_path=str(source),
-            bench_path=str(bench),
+            bench_path=str(output / ordered_name),
             slides=source_assets,
             subtopics=_summarize(source_assets, syllabus, expected),
             source_format=source.suffix.lower().lstrip("."),
         ))
-    manifest = {
-        "lessons": [lesson.name for lesson in lessons],
-        "syllabus_file": bool(syllabus),
-        "expected_file": bool(expected),
-    }
-    (output / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return MaterialsPackage(str(root), lessons, syllabus, expected, str(output))
+
+
+def modernize_materials(package: MaterialsPackage) -> None:
+    """Crea solo new_slides quando il professore avvia esplicitamente il restyling."""
+    output = Path(package.data_dir) / "new_slides"
+    output.mkdir(parents=True, exist_ok=True)
+    for lesson in package.lessons:
+        source = Path(lesson.source_path)
+        destination = output / Path(lesson.bench_path).name
+        if lesson.source_format == "pptx":
+            _modernize(source, destination, lesson.slides)
+        elif lesson.source_format == "pdf":
+            _modernize_pdf(source, destination)
+        else:
+            shutil.copy2(source, destination)
+        lesson.bench_path = str(destination)
+    package.output_dir = str(output)
 
 
 def suggest_micro_changes(lesson: LessonAsset, slide: SlideAsset, syllabus: str, expected: str) -> list[MicroChange]:
@@ -393,15 +543,12 @@ def approve_change(package: MaterialsPackage, change: MicroChange) -> bool:
         if replaced:
             document.save(lesson.bench_path)
     elif lesson.source_format == "pdf":
-        # PDF non è riscritto in-place: conserva la pagina originale e genera
-        # una copia testuale revisionabile con le modifiche approvate.
-        revised = Path(lesson.bench_path).with_suffix(".reviewed.md")
-        if not revised.exists():
-            body = "\n\n".join(f"## Pagina {item.number}\n\n{item.text}" for item in lesson.slides)
-            revised.write_text(f"# {lesson.name} — versione revisionata\n\n{body}\n", encoding="utf-8")
-        content = revised.read_text(encoding="utf-8")
-        if change.original_text in content:
-            revised.write_text(content.replace(change.original_text, change.proposed_text, 1), encoding="utf-8")
+        candidate = _pdf_candidate_bytes(lesson.bench_path, slide.number, change.original_text, change.proposed_text)
+        if candidate is not None:
+            output_path = Path(lesson.bench_path)
+            temporary = output_path.with_suffix(output_path.suffix + ".tmp")
+            temporary.write_bytes(candidate)
+            temporary.replace(output_path)
             replaced = True
     if replaced:
         change.status = "approved"
