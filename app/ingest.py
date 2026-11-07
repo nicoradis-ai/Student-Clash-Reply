@@ -24,7 +24,10 @@ def _read(path: Path) -> list[str]:
 
 
 def list_courses(root: str = "data") -> list[str]:
-    return sorted(p.name for p in Path(root).iterdir() if (p / "slides").is_dir() or (p / "exams").is_dir())
+    """Corsi con almeno un file di materiale (le cartelle ancora vuote non compaiono)."""
+    def has_material(p: Path) -> bool:
+        return any(f.suffix.lower() in (".md", ".pdf") for d in ("slides", "exams") for f in (p / d).glob("*"))
+    return sorted(p.name for p in Path(root).iterdir() if p.is_dir() and has_material(p))
 
 
 def load_course(course_dir: str) -> list[Chunk]:
