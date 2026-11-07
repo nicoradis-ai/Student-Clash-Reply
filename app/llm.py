@@ -28,7 +28,7 @@ def _load_dotenv(path: str = ".env") -> None:
 _load_dotenv()
 
 CACHE = Path(os.getenv("CACHE_DIR", ".cache"))
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
 EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 EMBED_BATCH = 200
 OFFLINE_DIM = 256
@@ -98,6 +98,7 @@ def chat_json(system: str, user: str, fallback):
     if cached is not None:
         return cached
     last = None
+    extra = {"temperature": 0.4}
     for _ in range(2):  # un retry
         try:
             resp = _get_client().chat.completions.create(
@@ -105,13 +106,15 @@ def chat_json(system: str, user: str, fallback):
                 response_format={"type": "json_object"},
                 messages=[{"role": "system", "content": system},
                           {"role": "user", "content": user}],
-                temperature=0.4,
+                **extra,
             )
             data = json.loads(resp.choices[0].message.content)
             _write_cache(path, data)
             return data
         except Exception as e:
             last = e
+            if "temperature" in str(e).lower():  # alcuni modelli accettano solo la temperatura di default
+                extra = {}
     _record(last, "chat")
     return fallback()
 

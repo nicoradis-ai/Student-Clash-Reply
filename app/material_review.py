@@ -79,7 +79,8 @@ def _pages(con: Concept, chunks: list[Chunk], index: Index | None, source: str, 
         own.sort(key=lambda c: -c.points)
     elif index is not None and query and own:
         mine = {c.id for c in own}
-        near = [c for c in index.retrieve(query, k=len(index.chunks), source=source) if c.id in mine]
+        near = [c for c in index.retrieve(query, k=len(index.chunks), source=source, min_sim=0)
+                if c.id in mine]  # min_sim=0: qui serve solo a ordinare i brani del concetto
         own = near or own
     picked = own[:k]
     if len(picked) < k and index is not None:
