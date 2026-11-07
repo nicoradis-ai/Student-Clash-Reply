@@ -1,0 +1,10 @@
+- Conoscenze di base riguardanti la progettazione dei circuiti digitali
+- Conoscenza del concetto di sistema di elaborazione
+- Conoscenza dell'architettura di un generico sistema di elaborazione e dei suoi principi di funzionamento
+- Conoscenza e comprensione dei moduli elementari che compongono un sistema di elaborazione
+- Conoscenza dell'architettura e del funzionamento di un microprocessore e di un linguaggio Assembler
+- Capacità di scrivere semplici programmi Assembler
+- Conoscenza dell'architettura del sotto-sistema di memoria
+- Conoscenza delle modalità di interfacciamento e gestione delle periferiche
+- Conoscenza di base sulla programmazione di un sistema embedded
+- Conoscenze elementari sull'architettura dei processori CISC, RISC e superscalari

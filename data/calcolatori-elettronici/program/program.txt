@@ -1,0 +1,8 @@
+- Concetti base sui circuiti logici (6 ore)
+- Architettura e funzionamento di un processore (10 ore)
+- Programmazione in linguaggio Assembler (15 ore)
+- Architettura e funzionamento di un sistema a processore (7 ore)
+- Il sistema di memoria (12 ore)
+- Tecniche per la gestione delle periferiche ed esempio di programmazione di un sistema embedded (9 ore)
+- Struttura e funzionamento dei bus di comunicazione (3 ore)
+- Cenni ai processori RISC e superscalari (3 ore)
