@@ -1,47 +1,45 @@
 """Agente 2 · Allineamento delle esercitazioni.
 
-Obiettivo: le esercitazioni devono allenare il transfer, non solo lo schema d'esame. Per i concetti
-con gap alto propone nuovi esercizi (o modifiche a quelli esistenti) in forma non standard, allineati
-a ciò che è insegnato nelle slide. Usa i blocchi `source == "exercise"` (cartella exercises/ del corso);
-se non ci sono, ripiega sugli esercizi presenti nelle slide. Owner: thread "Agente allineamento esercitazioni".
+Obiettivo: le esercitazioni devono preparare a ciò che l'esame chiede E allenare il transfer, non solo lo
+schema d'esame. Per ogni concetto confronta peso nelle esercitazioni, peso nei punti d'esame e transfer gap,
+decide un'azione (aggiungere / trasformare / ridurre) e propone esercizi nuovi o modifiche a quelli esistenti,
+più cosa devono esercitare gli studenti. La logica sta in `app/practice.py`; qui la si traduce in `Proposal`.
+Usa i blocchi `source == "exercise"` (cartella exercises/); se mancano, le slide di esercizi.
 """
-from ..llm import chat_json
 from ..models import Proposal
-from ..rag import cite
+from ..practice import align_practice
 from .base import CourseContext, evidence
 
-SYSTEM = (
-    "Sei un docente che progetta esercitazioni universitarie. Ti do un concetto, le metriche della sonda di transfer "
-    "(gli studenti risolvono gli esercizi tipici ma non le varianti), le esercitazioni esistenti e le slide. "
-    "Proponi al massimo due esercizi di esercitazione nuovi o modificati che allenino il transfer: forma diversa "
-    "dallo schema d'esame (prevedere l'output, trovare l'errore, scegliere e motivare, contesto nuovo). "
-    'Rispondi in JSON: {"proposals": [{"target_ref": "esercitazione da modificare o \'nuova\'", '
-    '"problem": "...", "change": "testo dell\'esercizio proposto"}]}. In italiano.'
-)
+ACTION_LABEL = {"aggiungere": "Aggiungere esercitazioni", "trasformare": "Trasformare in esercizi di transfer",
+                "ridurre": "Ridurre lo spazio nelle esercitazioni"}
 
 
 class EsercitazioniAgent:
     name = "esercitazioni"
     title = "🛠️ Esercitazioni"
-    goal = "Allinea le esercitazioni a ciò che va capito: esercizi che allenano il transfer, non solo lo schema d'esame."
+    goal = ("Allinea le esercitazioni a ciò che l'esame chiede e a ciò che va capito: copre i concetti che "
+            "l'esame pesa ma nessuno fa esercitare, e trasforma in esercizi di transfer quelli dove il gap è alto.")
 
-    def run(self, ctx: CourseContext) -> list[Proposal]:
+    def run(self, ctx: CourseContext, top: int = 3) -> list[Proposal]:
         out = []
-        for con, m in ctx.focus():
-            exs = ctx.chunks_of(con.id, "exercise")[:3] or ctx.index.retrieve(con.name, k=3, source="exercise")
-            slides = ctx.index.retrieve(con.name, k=2, source="slide")
-            user = (f"Concetto: {con.name} – {con.description}\n{evidence(m)}\n\n"
-                    f"Esercitazioni esistenti:\n{cite(exs) or '(nessuna)'}\n\nSlide:\n{cite(slides)}")
-            ref = exs[0].ref if exs else "nuova esercitazione"
-            data = chat_json(SYSTEM, user, lambda: {"proposals": [{
-                "target_ref": ref,
-                "problem": f"Le esercitazioni su {con.name} ripetono la forma dei temi d'esame.",
-                "change": f"Dato un frammento già risolto che usa {con.name} nel caso sbagliato, trova l'errore e "
-                          "spiega quale scelta avresti fatto e perché.",
-            }]})
-            for p in data.get("proposals", []):
-                out.append(Proposal(agent=self.name, concept_id=con.id, target_ref=p.get("target_ref", ref),
-                                    problem=p.get("problem", ""), change=p.get("change", ""),
-                                    rationale=evidence(m), sources=[s.id for s in exs + slides],
-                                    priority=m.transfer_gap))
+        for p in align_practice(ctx.concepts, ctx.chunks, ctx.index, ctx.metrics, top=top):
+            if p.action == "ok":
+                continue
+            parts = []
+            if p.change_existing:
+                parts.append(f"Modifica: {p.change_existing}")
+            for i, e in enumerate(p.new_exercises, 1):
+                parts.append(f"Nuovo esercizio {i}: {e.prompt}\nRubrica: {e.rubric}")
+            if p.student_practice:
+                parts.append(f"Per gli studenti: {p.student_practice}")
+            m = ctx.metric(p.concept_id)
+            first = next((s for s in p.sources if s.startswith("exercises/") or "esercit" in s or "esercizi" in s), "")
+            refs = {c.id: c.ref for c in ctx.chunks}
+            out.append(Proposal(
+                agent=self.name, concept_id=p.concept_id,
+                target_ref=refs.get(first, "nuova esercitazione"),
+                problem=f"{ACTION_LABEL[p.action]}. {p.diagnosis}",
+                change="\n\n".join(parts) or f"{ACTION_LABEL[p.action]} su questo concetto.",
+                rationale=p.evidence + (f" {evidence(m)}" if m else ""),
+                sources=p.sources, priority=p.priority))
         return out

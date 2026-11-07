@@ -43,6 +43,9 @@ class PracticeProposal:
 
 
 def is_practice(chunk: Chunk) -> bool:
+    """Blocchi della cartella exercises/; in mancanza, slide di esercizi riconosciute dal nome."""
+    if chunk.source == "exercise":
+        return True
     name = chunk.id.split("#", 1)[0].lower()
     return chunk.source == "slide" and any(k in name for k in PRACTICE_KEYS)
 
