@@ -6,7 +6,7 @@ from app import llm
 from app.concepts import extract_concepts
 from app.exercises import make_pair
 from app.grading import grade
-from app.ingest import list_courses, load_course
+from app.ingest import course_config, list_courses, load_course
 from app.insights import misalignments, study_advice
 from app.metrics import concept_metrics, coverage_distance
 from app.rag import Index
@@ -17,22 +17,46 @@ S = st.session_state
 
 # ---------- barra laterale ----------
 st.sidebar.title("Sonda di transfer")
-if llm.is_online():
-    st.sidebar.success(f"Online · {llm.MODEL}")
-else:
+if not llm.is_online():
     st.sidebar.warning("Modalità offline: niente OPENAI_API_KEY, uso risposte di riserva.")
 courses = list_courses()
 course = st.sidebar.selectbox("Corso", courses)
-if st.sidebar.button("Carica materiale", type="primary") or S.get("course") != course:
+cfg = course_config(f"data/{course}")
+exams_from = None
+if cfg.get("exams_from"):
+    if st.sidebar.checkbox(f"Solo esami dal {cfg['exams_from']}", value=True,
+                           help=cfg.get("exams_from_note", "")):
+        exams_from = cfg["exams_from"]
+
+
+@st.cache_data(show_spinner=False)
+def _load(course: str, exams_from):
+    return load_course(f"data/{course}", exams_from)
+
+
+key = (course, exams_from)
+if st.sidebar.button("Carica materiale", type="primary") or S.get("key") != key:
     with st.spinner("Leggo il materiale e costruisco l'indice…"):
-        S.course = course
-        S.chunks = load_course(f"data/{course}")
+        S.key = key
+        S.chunks = _load(course, exams_from)
         S.index = Index(S.chunks)
         S.concepts = extract_concepts(S.chunks)
-        S.exercises, S.answers, S.live_answers = [], [], []
+        S.exercises, S.answers, S.live_answers, S.mis = [], [], [], None
 st.sidebar.caption(f"{len(S.get('chunks', []))} blocchi di materiale · {len(S.get('concepts', []))} concetti")
 
 view = st.sidebar.radio("Vista", ["Docente", "Studente"])
+
+
+def status_banner():
+    """Va chiamato alla fine dello script, così conta anche gli errori di questo giro."""
+    if llm.is_online() and (llm.ERRORS or llm.EMBED_DEGRADED):
+        st.sidebar.error(f"OpenAI non ha risposto: {llm.FALLBACKS} risposte di riserva usate."
+                         + (" Embedding passati a offline." if llm.EMBED_DEGRADED else ""))
+        with st.sidebar.expander("Dettagli"):
+            for e in llm.ERRORS[-5:]:
+                st.caption(e)
+    elif llm.is_online():
+        st.sidebar.success(f"Online · {llm.MODEL}")
 name = {c.id: c.name for c in S.get("concepts", [])}
 
 
@@ -135,3 +159,5 @@ else:
             tips = study_advice(ms, S.concepts)
             for t in tips or ["Nessun gap evidente per ora: prova anche le varianti degli altri concetti."]:
                 st.write("• " + t)
+
+status_banner()

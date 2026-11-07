@@ -17,6 +17,12 @@ Test: `OFFLINE=1 python -m pytest -q`
 
 Ogni corso è una cartella `data/<corso>/` con `slides/` e `exams/` (`.md` o `.pdf`). Nei `.md` le slide sono separate da `---`, gli esercizi d'esame da titoli `## Esercizio N (X punti)`. Una riga `Concetto: Nome` è facoltativa: aiuta la modalità offline, online i concetti li estrae l'LLM. `data/esempio-poo/` è un corso fittizio di Programmazione ad oggetti.
 
+Nei PDF ogni pagina è un blocco (citato come `<file> p.N`). Per i temi d'esame PDF i punti si stimano dalla sezione: risposta chiusa 1, risposta aperta 5, "sino a N punti" N.
+
+`data/<corso>/config.json` (facoltativo) può contenere `exams_from` (`"YYYY-MM"`): nella barra laterale compare un filtro che esclude gli esami più vecchi, riconosciuti dalla data nel nome del file (`YYYY_MM_...`). Per Calcolatori Elettronici è `2019-06`, perché prima gli esami erano su x86 e le slide sono su RISC-V. I file non vengono cancellati.
+
+Se OpenAI non risponde, l'app usa le risposte di riserva e lo dice in rosso nella barra laterale.
+
 ## Script della demo
 
 1. **Docente · Mappa dei concetti**: conferma i concetti estratti (accordo con il docente).
