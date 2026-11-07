@@ -7,7 +7,7 @@ Demo per il Reply Student Tech Clash 2026. Contesto in `docs/handover.md`, desig
 ```bash
 pip install -r requirements.txt
 cp .env.example .env              # poi metti la chiave in .env (git lo ignora); senza chiave gira offline
-# facoltativi: OPENAI_MODEL (default gpt-4o-mini), OPENAI_EMBED_MODEL, OFFLINE=1
+# facoltativi: OPENAI_MODEL (default gpt-6-luna, il modello degli organizzatori), OPENAI_EMBED_MODEL, OFFLINE=1
 streamlit run streamlit_app.py
 ```
 
