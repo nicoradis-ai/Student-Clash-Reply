@@ -9,12 +9,13 @@ from __future__ import annotations
 import io
 import re
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import MSO_SHAPE, MSO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
@@ -33,17 +34,32 @@ class SlideBlock:
 
 
 @dataclass
+class TableBlock:
+    source_shape_index: int
+    rows: list[list[str]]
+    left: int
+    top: int
+    width: int
+    height: int
+
+
+@dataclass
 class SlideAsset:
     number: int
     source_path: str
     title: str
     blocks: list[SlideBlock] = field(default_factory=list)
+    tables: list[TableBlock] = field(default_factory=list)
     image_shapes: list[int] = field(default_factory=list)
     plain_text: str = ""
 
     @property
     def text(self) -> str:
-        return self.plain_text or "\n\n".join(block.text for block in self.blocks if block.text.strip())
+        if self.plain_text:
+            return self.plain_text
+        text_blocks = [block.text for block in self.blocks if block.text.strip()]
+        table_blocks = ["\n".join("\t".join(row) for row in table.rows) for table in self.tables]
+        return "\n\n".join(text_blocks + table_blocks)
 
 
 @dataclass
@@ -139,6 +155,21 @@ def _extract_presentation(path: Path) -> list[SlideAsset]:
         for index, shape in enumerate(slide.shapes):
             if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
                 images.append(index)
+            if getattr(shape, "has_table", False):
+                table_text = "\n".join(
+                    "\t".join(cell.text for cell in row.cells)
+                    for row in shape.table.rows
+                )
+                if table_text.strip():
+                    blocks.append(SlideBlock(
+                        source_shape_index=index,
+                        text=table_text,
+                        left=shape.left,
+                        top=shape.top,
+                        width=shape.width,
+                        height=shape.height,
+                    ))
+                continue
             if not getattr(shape, "has_text_frame", False) or not shape.text.strip():
                 continue
             blocks.append(SlideBlock(
@@ -214,38 +245,97 @@ def _add_text(slide, block: SlideBlock, text: str, slide_width: int):
     frame = textbox.text_frame
     frame.clear()
     frame.word_wrap = True
-    lines = text.splitlines() or [""]
-    for index, line in enumerate(lines):
-        paragraph = frame.paragraphs[0] if index == 0 else frame.add_paragraph()
-        paragraph.text = line
-        paragraph.level = 0
+    frame.text = text
+    for paragraph in frame.paragraphs:
         paragraph.font.name = "Aptos"
         paragraph.font.size = Pt(24 if block.is_title else 18)
         paragraph.font.color.rgb = RGBColor(18, 32, 55)
-    if block.is_title:
-        frame.paragraphs[0].font.bold = True
+        paragraph.font.bold = block.is_title
 
 
-def _add_header(slide, slide_width: int, slide_height: int, title: str, number: int):
-    header = slide.shapes.add_shape(1, 0, 0, slide_width, Inches(0.82))
-    header.fill.solid()
-    header.fill.fore_color.rgb = RGBColor(18, 32, 55)
-    header.line.fill.background()
-    text = slide.shapes.add_textbox(Inches(0.45), Inches(0.18), slide_width - Inches(1), Inches(0.42))
-    text.text_frame.text = title or f"Slide {number}"
-    paragraph = text.text_frame.paragraphs[0]
-    paragraph.font.name = "Aptos Display"
-    paragraph.font.bold = True
-    paragraph.font.size = Pt(25)
-    paragraph.font.color.rgb = RGBColor(255, 255, 255)
-    footer = slide.shapes.add_textbox(slide_width - Inches(1), slide_height - Inches(0.35), Inches(0.6), Inches(0.2))
-    footer.text_frame.text = str(number)
-    footer.text_frame.paragraphs[0].alignment = PP_ALIGN.RIGHT
-    footer.text_frame.paragraphs[0].font.size = Pt(10)
-    footer.text_frame.paragraphs[0].font.color.rgb = RGBColor(90, 105, 125)
+def _clear_shapes(slide) -> None:
+    for shape in list(slide.shapes):
+        element = shape._element
+        element.getparent().remove(element)
 
 
-def _modernize(source: Path, output: Path, assets: list[SlideAsset]) -> dict:
+def _add_standard_frame(slide, slide_width: int, slide_height: int) -> None:
+    """Cornice senza testo: nessuna parola viene aggiunta alla slide originale."""
+    background = slide.background.fill
+    background.solid()
+    background.fore_color.rgb = RGBColor(255, 255, 255)
+
+    margin = Inches(0.28)
+    frame = slide.shapes.add_shape(
+        MSO_SHAPE.ROUNDED_RECTANGLE,
+        margin,
+        margin,
+        slide_width - 2 * margin,
+        slide_height - 2 * margin,
+    )
+    frame.fill.solid()
+    frame.fill.fore_color.rgb = RGBColor(255, 255, 255)
+    frame.line.color.rgb = RGBColor(38, 91, 181)
+    frame.line.width = Pt(1.25)
+
+    accent = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.62), Inches(0.55), Inches(1.28), Inches(0.09))
+    accent.fill.solid()
+    accent.fill.fore_color.rgb = RGBColor(38, 91, 181)
+    accent.line.fill.background()
+
+
+def _copy_picture(target, source_shape) -> None:
+    """Ricrea l'immagine esattamente nella sua area, compreso l'eventuale ritaglio."""
+    picture = target.shapes.add_picture(
+        source_shape.image.blob,
+        source_shape.left,
+        source_shape.top,
+        source_shape.width,
+        source_shape.height,
+    )
+    for attribute in ("crop_left", "crop_right", "crop_top", "crop_bottom"):
+        setattr(picture, attribute, getattr(source_shape, attribute, 0.0))
+
+
+def _recreate_modern_slide(
+    slide,
+    source_slide,
+    asset: SlideAsset,
+    slide_width: int,
+    slide_height: int,
+    replacement: tuple[str, str] | None = None,
+) -> bool:
+    """Ricostruisce una sola slide con lo stile standard e contenuti originali."""
+    if replacement and not any(replacement[0] in block.text for block in asset.blocks):
+        return False
+
+    _clear_shapes(slide)
+    _add_standard_frame(slide, slide_width, slide_height)
+    replaced = False
+    blocks_by_shape = {block.source_shape_index: block for block in asset.blocks}
+    for index, shape in enumerate(source_slide.shapes):
+        block = blocks_by_shape.get(index)
+        if block is not None:
+            text = block.text
+            if replacement and not replaced and replacement[0] in text:
+                text = text.replace(replacement[0], replacement[1], 1)
+                replaced = True
+            _add_text(slide, block, text, slide_width)
+        elif getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE:
+            try:
+                _copy_picture(slide, shape)
+            except Exception:
+                # Una figura non supportata non impedisce il recupero delle altre immagini.
+                continue
+    return replaced if replacement else True
+
+
+def _modernize(
+    source: Path,
+    output: Path,
+    assets: list[SlideAsset],
+    on_slide: Callable[[SlideAsset], None] | None = None,
+) -> dict:
     original = Presentation(str(source))
     modern = Presentation()
     modern.slide_width = original.slide_width
@@ -254,20 +344,11 @@ def _modernize(source: Path, output: Path, assets: list[SlideAsset]) -> dict:
     mapping = {}
     for asset in assets:
         target = modern.slides.add_slide(blank)
-        _add_header(target, modern.slide_width, modern.slide_height, asset.title, asset.number)
         mapping[str(asset.number)] = {}
         source_slide = original.slides[asset.number - 1]
-        for block in asset.blocks:
-            _add_text(target, block, block.text, modern.slide_width)
-            mapping[str(asset.number)][str(block.source_shape_index)] = len(target.shapes) - 1
-        for shape in source_slide.shapes:
-            if getattr(shape, "shape_type", None) != MSO_SHAPE_TYPE.PICTURE:
-                continue
-            try:
-                target.shapes.add_picture(shape.image.blob, shape.left, shape.top, shape.width, shape.height)
-            except Exception:
-                # Un'immagine non leggibile non deve impedire il restyling delle altre slide.
-                continue
+        _recreate_modern_slide(target, source_slide, asset, modern.slide_width, modern.slide_height)
+        if on_slide:
+            on_slide(asset)
     output.parent.mkdir(parents=True, exist_ok=True)
     modern.save(str(output))
     return mapping
@@ -366,11 +447,10 @@ def _render_pptx_preview(
     width, height = 1280, 720
     scale_x = width / presentation.slide_width
     scale_y = height / presentation.slide_height
-    image = Image.new("RGB", (width, height), "#f5f7fb")
+    image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
-    draw.rectangle((0, 0, width, 84), fill="#142843")
-    draw.text((42, 24), slide_asset.title[:65] or f"Slide {slide_asset.number}",
-              font=ImageFont.load_default(size=30), fill="white")
+    draw.rounded_rectangle((27, 27, width - 27, height - 27), radius=22, fill="white", outline="#265bb5", width=3)
+    draw.rounded_rectangle((60, 54, 188, 63), radius=5, fill="#265bb5")
     replacement = proposed_text
     replaced = False
     for index, shape in enumerate(slide.shapes):
@@ -380,7 +460,12 @@ def _render_pptx_preview(
             try:
                 from PIL import Image as PILImage
                 photo = PILImage.open(io.BytesIO(shape.image.blob)).convert("RGB")
-                photo.thumbnail((max(1, x1 - x0), max(1, y1 - y0)))
+                crop_left = int(photo.width * getattr(shape, "crop_left", 0.0))
+                crop_top = int(photo.height * getattr(shape, "crop_top", 0.0))
+                crop_right = photo.width - int(photo.width * getattr(shape, "crop_right", 0.0))
+                crop_bottom = photo.height - int(photo.height * getattr(shape, "crop_bottom", 0.0))
+                photo = photo.crop((crop_left, crop_top, crop_right, crop_bottom))
+                photo = photo.resize((max(1, x1 - x0), max(1, y1 - y0)))
                 image.paste(photo, (x0, y0))
             except Exception:
                 continue
@@ -422,25 +507,30 @@ def preview_change(lesson: LessonAsset, slide: SlideAsset, change: MicroChange) 
     )
 
 
-def prepare_materials(data_dir: str | Path, output_dir: str | Path | None = None) -> MaterialsPackage:
-    """Analizza PPTX, PDF, DOCX, Markdown e TXT senza creare file di output."""
+def prepare_materials(
+    data_dir: str | Path,
+    output_dir: str | Path | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> MaterialsPackage:
+    """Analizza esclusivamente le presentazioni PPTX presenti in ``data_dir/slides``."""
     root = Path(data_dir)
+    slides_dir = root / "slides"
     output = Path(output_dir) if output_dir else root / "new_slides"
-    output_resolved = output.resolve()
-    supported = {".pptx", ".pdf", ".docx", ".md", ".txt"}
     files = sorted(
-        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in supported
-         and output_resolved not in path.resolve().parents
-         and "new_slides" not in path.parts
-         and path.name.lower() not in {"programma.txt", "requisiti_attesi.txt", "syllabus.md"}),
+        (path for path in slides_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".pptx"),
         key=_sort_key,
-    )
+    ) if slides_dir.is_dir() else []
     syllabus = _read_first(root, ("programma.txt", "syllabus.md"))
     expected = _read_first(root, ("requisiti_attesi.txt",))
     lessons = []
-    for source in files:
-        source_assets = _extract_presentation(source) if source.suffix.lower() == ".pptx" else _extract_document(source)
+    total_files = len(files)
+    if on_progress:
+        on_progress(0, total_files, "Preparazione analisi")
+    for position, source in enumerate(files, 1):
+        source_assets = _extract_presentation(source)
         if not source_assets:
+            if on_progress:
+                on_progress(position, total_files, source.name)
             continue
         label = _safe_name(source.stem)
         ordered_name = f"{len(lessons) + 1}_{label}{source.suffix.lower()}"
@@ -452,24 +542,44 @@ def prepare_materials(data_dir: str | Path, output_dir: str | Path | None = None
             subtopics=_summarize(source_assets, syllabus, expected),
             source_format=source.suffix.lower().lstrip("."),
         ))
+        if on_progress:
+            on_progress(position, total_files, source.name)
+    if on_progress:
+        on_progress(total_files, total_files, "Analisi completata")
     return MaterialsPackage(str(root), lessons, syllabus, expected, str(output))
 
 
-def modernize_materials(package: MaterialsPackage) -> None:
-    """Crea solo new_slides quando il professore avvia esplicitamente il restyling."""
+def modernize_materials(
+    package: MaterialsPackage,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> None:
+    """Ricrea solo i PPTX di ``slides`` in ``new_slides``, una slide alla volta."""
     output = Path(package.data_dir) / "new_slides"
     output.mkdir(parents=True, exist_ok=True)
-    for lesson in package.lessons:
+    ppt_lessons = [lesson for lesson in package.lessons if lesson.source_format == "pptx"]
+    total_slides = sum(len(lesson.slides) for lesson in ppt_lessons)
+    completed_slides = 0
+    if on_progress:
+        on_progress(0, total_slides, "Preparazione ricostruzione slide")
+    for lesson in ppt_lessons:
         source = Path(lesson.source_path)
         destination = output / Path(lesson.bench_path).name
-        if lesson.source_format == "pptx":
-            _modernize(source, destination, lesson.slides)
-        elif lesson.source_format == "pdf":
-            _modernize_pdf(source, destination)
-        else:
-            shutil.copy2(source, destination)
+
+        def report_slide(asset: SlideAsset) -> None:
+            nonlocal completed_slides
+            completed_slides += 1
+            if on_progress:
+                on_progress(
+                    completed_slides,
+                    total_slides,
+                    f"{source.name} · slide {asset.number}/{len(lesson.slides)}",
+                )
+
+        _modernize(source, destination, lesson.slides, on_slide=report_slide)
         lesson.bench_path = str(destination)
     package.output_dir = str(output)
+    if on_progress:
+        on_progress(total_slides, total_slides, "Ricostruzione slide completata")
 
 
 def suggest_micro_changes(lesson: LessonAsset, slide: SlideAsset, syllabus: str, expected: str) -> list[MicroChange]:
@@ -490,8 +600,12 @@ def suggest_micro_changes(lesson: LessonAsset, slide: SlideAsset, syllabus: str,
     return changes
 
 
-def approve_change(package: MaterialsPackage, change: MicroChange) -> bool:
-    """Aggiorna solo il file revisionato, mai l'originale."""
+def approve_change(
+    package: MaterialsPackage,
+    change: MicroChange,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> bool:
+    """Rigenera solo la slide approvata nel PPTX modernizzato, mai l'originale."""
     lesson = next((item for item in package.lessons if item.name == change.lesson), None)
     if lesson is None:
         return False
@@ -499,15 +613,21 @@ def approve_change(package: MaterialsPackage, change: MicroChange) -> bool:
     if slide is None:
         return False
     replaced = False
+    if on_progress:
+        on_progress(0, 1, f"Rigenero slide {change.slide_number}")
     if lesson.source_format == "pptx":
         presentation = Presentation(lesson.bench_path)
+        source_presentation = Presentation(lesson.source_path)
         target = presentation.slides[slide.number - 1]
-        for shape in target.shapes:
-            if not getattr(shape, "has_text_frame", False) or change.original_text not in shape.text:
-                continue
-            shape.text_frame.text = shape.text.replace(change.original_text, change.proposed_text, 1)
-            replaced = True
-            break
+        source_slide = source_presentation.slides[slide.number - 1]
+        replaced = _recreate_modern_slide(
+            target,
+            source_slide,
+            slide,
+            presentation.slide_width,
+            presentation.slide_height,
+            replacement=(change.original_text, change.proposed_text),
+        )
         if replaced:
             presentation.save(lesson.bench_path)
     elif lesson.source_format in {"md", "txt"}:
@@ -552,4 +672,7 @@ def approve_change(package: MaterialsPackage, change: MicroChange) -> bool:
             replaced = True
     if replaced:
         change.status = "approved"
+    if on_progress:
+        result = "Slide ricreata" if replaced else "Testo non trovato: nessuna slide modificata"
+        on_progress(1, 1, result)
     return replaced
