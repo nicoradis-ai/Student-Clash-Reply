@@ -10,6 +10,10 @@ from pathlib import Path
 
 from .models import Chunk
 
+ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = ROOT / "data"
+WARNINGS: list[str] = []  # problemi di lettura dei file, mostrati nella UI
+
 POINTS_RE = re.compile(r"\((\d+(?:[.,]\d+)?)\s*punt", re.I)
 DATE_RE = re.compile(r"^(\d{4})_(\d{1,2})")
 
@@ -17,8 +21,15 @@ DATE_RE = re.compile(r"^(\d{4})_(\d{1,2})")
 def _pdf_pages(path: Path) -> list[str]:
     try:
         from pypdf import PdfReader
+    except ImportError:
+        msg = "pypdf non installato: i PDF non si possono leggere (pip install -r requirements.txt)"
+        if msg not in WARNINGS:
+            WARNINGS.append(msg)
+        return []
+    try:
         return [p.extract_text() or "" for p in PdfReader(str(path)).pages]
-    except Exception:
+    except Exception as e:
+        WARNINGS.append(f"{path.name}: {type(e).__name__}: {str(e)[:120]}")
         return []
 
 
@@ -58,11 +69,18 @@ def exam_date(name: str) -> str | None:
     return f"{m.group(1)}-{int(m.group(2)):02d}" if m else None
 
 
-def list_courses(root: str = "data") -> list[str]:
+def course_path(course: str) -> Path:
+    return DATA_DIR / course
+
+
+def list_courses(root: str | Path = DATA_DIR) -> list[str]:
     """Corsi con almeno un file di materiale (le cartelle ancora vuote non compaiono)."""
     def has_material(p: Path) -> bool:
         return any(f.suffix.lower() in (".md", ".pdf") for d in ("slides", "exams") for f in (p / d).glob("*"))
-    return sorted(p.name for p in Path(root).iterdir() if p.is_dir() and has_material(p))
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir() and has_material(p))
 
 
 def load_course(course_dir: str, exams_from: str | None = None) -> list[Chunk]:
