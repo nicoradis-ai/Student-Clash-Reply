@@ -153,7 +153,8 @@ if view == "Docente":
         if not all_answers():
             st.info("Prima serve la diagnosi (tab 1): gli agenti lavorano solo sui concetti con gap alto.")
         else:
-            ctx = build_context(S.chunks, S.index, S.concepts, S.exercises, all_answers())
+            ctx = build_context(S.chunks, S.index, S.concepts, S.exercises, all_answers(),
+                                str(course_path(course)), exams_from)
             st.markdown("**Concetti su cui interveniamo**")
             for con, m in ctx.focus():
                 st.markdown(f"- **{con.name}** · {evidence(m)}")

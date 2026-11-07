@@ -8,10 +8,12 @@ from .rag import Index
 
 
 def build_context(chunks: list[Chunk], index: Index, concepts: list[Concept],
-                  exercises: list[Exercise], answers: list[Answer]) -> CourseContext:
+                  exercises: list[Exercise], answers: list[Answer],
+                  course_dir: str = "", exams_from: str | None = None) -> CourseContext:
     return CourseContext(chunks=chunks, index=index, concepts=concepts,
                          metrics=concept_metrics(concepts, chunks, exercises, answers),
-                         exercises=exercises, answers=answers)
+                         exercises=exercises, answers=answers,
+                         course_dir=course_dir, exams_from=exams_from)
 
 
 def run_agents(ctx: CourseContext, agents: list[Agent] | None = None) -> tuple[dict[str, list[Proposal]], dict[str, str]]:

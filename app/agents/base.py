@@ -20,6 +20,8 @@ class CourseContext:
     metrics: list[ConceptMetrics]        # una per concetto, da metrics.concept_metrics
     exercises: list[Exercise] = field(default_factory=list)   # coppie tipico/variante della sonda
     answers: list[Answer] = field(default_factory=list)       # risposte (simulate + reali)
+    course_dir: str = ""                 # cartella del corso: per rileggere ad es. tutti gli esami storici
+    exams_from: str | None = None        # filtro esami scelto nella sidebar ("YYYY-MM")
 
     def concept(self, concept_id: str) -> Concept:
         return next(c for c in self.concepts if c.id == concept_id)
