@@ -71,3 +71,33 @@ def test_offline_concepts_on_example_course(monkeypatch):
     monkeypatch.setenv("OFFLINE", "1")
     cs = extract_concepts(load_course("data/esempio-poo"))
     assert len(cs) == 5 and len({c.id for c in cs}) == 5
+
+
+def test_sample_skips_cover_and_takes_two_per_file():
+    chunks = [Chunk(f"slides/f{f}.pdf#{p}", "slide", f"f{f} p.{p + 1}", f"pagina {p} " * 100)
+              for f in range(47) for p in range(30)]
+    s = sample_material(chunks)
+    assert "p.1]" not in s  # mai la copertina quando il file ha più pagine
+    for f in range(47):
+        assert s.count(f"[f{f} p.") >= 2
+
+
+def test_assign_chunks_reuses_index_cache(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.delenv("OFFLINE", raising=False)
+    monkeypatch.setattr(llm, "EMBED_DEGRADED", False)
+    seen = []
+
+    def fake_batch(texts):
+        seen.append(tuple(texts))
+        return [list(np.ones(1536)) for _ in texts]
+
+    monkeypatch.setattr(llm, "_embed_batch", fake_batch)
+    monkeypatch.setattr(llm, "chat_json", lambda s, u, fb: {"concepts": [{"name": "Cache"}, {"name": "Bus"}]})
+    import app.concepts as concepts_mod
+    monkeypatch.setattr(concepts_mod, "chat_json", lambda s, u, fb: {"concepts": [{"name": "Cache"}, {"name": "Bus"}]})
+    chunks = [Chunk(f"exams/e.pdf#{i}", "exam", f"e p.{i}", f"testo {i}") for i in range(5)]
+    Index(chunks)
+    extract_concepts(chunks)
+    chunk_batches = [b for b in seen if b and b[0].startswith("testo")]
+    assert len(set(chunk_batches)) == 1  # stessi lotti di Index: in produzione sono cache hit

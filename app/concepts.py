@@ -5,13 +5,13 @@ from collections import defaultdict
 
 import numpy as np
 
-from .llm import chat_json, embed
+from .llm import _offline_embed, chat_json, embed
 from .models import Chunk, Concept
 
 TAG_RE = re.compile(r"^Concetto:\s*(.+)$", re.M | re.I)
 SAMPLE_CHARS = 12000
 PER_PAGE = 350
-SKIP_FILES = ("presentazione", "progetto", "esercizi")
+SKIP_FILES = ("presentazione", "progetto", "esercizi", "introduzione")
 
 SYSTEM = (
     "Sei un assistente didattico. Dal materiale di un corso universitario (estratti di slide e temi d'esame) "
@@ -37,13 +37,13 @@ def sample_material(chunks: list[Chunk], limit: int = SAMPLE_CHARS, per_page: in
     files = list(by_file)
     if not files:
         return ""
-    per_page = max(80, min(per_page, limit // len(files) - 20))  # tanti file: estratti più corti
-    picks_per_file = max(1, limit // (per_page * len(files)))
+    picks_per_file = max(2, limit // (per_page * len(files)))
+    per_page = max(80, min(per_page, limit // (len(files) * picks_per_file) - 20))  # tanti file: estratti più corti
     queues = []
     for f in files:
-        pages = by_file[f]
+        pages = by_file[f][1:] or by_file[f]  # salta la copertina / l'intestazione del tema d'esame
         step = max(1, len(pages) // picks_per_file)
-        queues.append(pages[::step][:picks_per_file])
+        queues.append(pages[step // 2::step][:picks_per_file])
     out, total = [], 0
     for rnd in range(max(len(q) for q in queues)):
         for q in queues:
@@ -116,8 +116,13 @@ def assign_chunks(concepts: list[Concept], chunks: list[Chunk]) -> None:
         else:
             untagged.append(ch)
     if untagged:
-        # un solo embed: concetti e chunk hanno per forza la stessa dimensione
-        vecs = embed([f"{c.name}: {c.description}" for c in concepts] + [c.text for c in untagged])
-        cvecs, tvecs = vecs[:len(concepts)], vecs[len(concepts):]
+        # chunk embeddati con la stessa lista di rag.Index, così si riusa la cache dei lotti
+        cvecs = embed([f"{c.name}: {c.description}" for c in concepts])
+        all_vecs = embed([c.text for c in chunks])
+        if cvecs.shape[1] != all_vecs.shape[1]:  # un embedding è passato a offline in mezzo: rifai tutto offline
+            cvecs = np.array([_offline_embed(f"{c.name}: {c.description}") for c in concepts])
+            all_vecs = np.array([_offline_embed(c.text) for c in chunks])
+        pos = {ch.id: i for i, ch in enumerate(chunks)}
+        tvecs = all_vecs[[pos[ch.id] for ch in untagged]]
         for ch, row in zip(untagged, tvecs @ cvecs.T):
             concepts[int(np.argmax(row))].chunk_ids.append(ch.id)
