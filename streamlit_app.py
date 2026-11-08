@@ -371,5 +371,11 @@ else:
     elif agent == "Creatore di survey":
         render_survey_creator()
 
+st.sidebar.caption(llm.describe())
+if not llm.is_online():
+    st.sidebar.info("Modalità offline: risposte di riserva deterministiche. Configura un provider in .env (vedi README).")
 if llm.is_online() and llm.ERRORS:
     st.sidebar.warning(f"Sono state usate {llm.FALLBACKS} risposte di riserva.")
+    with st.sidebar.expander("Errori"):
+        for e in llm.ERRORS:
+            st.caption(e)

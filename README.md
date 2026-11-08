@@ -22,7 +22,7 @@ Serve Python 3.10 o più recente.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # metti la chiave OpenAI in .env (git lo ignora)
+cp .env.example .env        # scegli il provider LLM in .env (git lo ignora), vedi sotto
 streamlit run app.py        # oppure: streamlit run streamlit_app.py
 ```
 
@@ -32,7 +32,21 @@ Poi nel browser:
 2. Scegli l'agente dal menu **Agente**.
 3. **Studente** → risponde alle survey che il professore ha approvato.
 
-**Senza chiave OpenAI** l'app funziona lo stesso in modalità offline. Usa risposte di riserva deterministiche e un embedding locale. Per forzarla anche con la chiave basta `OFFLINE=1`.
+**Senza nessun provider configurato** l'app funziona lo stesso in modalità offline. Usa risposte di riserva deterministiche e un embedding locale. Per forzarla anche con un provider configurato basta `OFFLINE=1`.
+
+### Provider LLM
+
+Tutte le chiamate passano da `app/llm.py` con l'SDK OpenAI, quindi va bene qualsiasi servizio compatibile con l'API OpenAI. Chat ed embedding si scelgono separatamente. In `.env.example` ci sono i blocchi pronti da copiare. La barra laterale dell'app mostra provider e modello in uso.
+
+| Provider | Costo | Chat (default) | Embedding (default) | Note |
+|---|---|---|---|---|
+| `gemini` | piano gratuito | `gemini-2.5-flash` | `gemini-embedding-001` | Chiave in `GEMINI_API_KEY` da [AI Studio](https://aistudio.google.com/apikey). Pochi messaggi al minuto: l'app aspetta e riprova da sola. Sul piano gratuito Google può usare i dati per l'addestramento, quindi solo dati sintetici. |
+| `ollama` | gratis, in locale | `qwen2.5:7b` | `nomic-embed-text` | `ollama pull qwen2.5:7b` e `ollama pull nomic-embed-text`. Nessuna chiave. Più lento e meno preciso. Avvia Ollama con `OLLAMA_CONTEXT_LENGTH=16384`, altrimenti i prompt lunghi vengono tagliati senza avviso. |
+| `openai` | a pagamento | `gpt-6-luna` | `text-embedding-3-small` | Come all'hackathon: valgono ancora `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_EMBED_MODEL`. |
+| `custom` | dipende | — | — | Qualsiasi endpoint compatibile: `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`. |
+| `offline` | — | — | hash delle parole | Solo per `EMBED_PROVIDER`, per esempio con Groq o OpenRouter che non hanno embedding. |
+
+Cambiare modello di embedding cambia la dimensione dei vettori, ma la cache è separata per modello e i vettori di modelli diversi non si mescolano mai.
 
 Test: `OFFLINE=1 python -m pytest -q` (tutti verdi; `data/esempio-poo/` è di nuovo nella repo come corso di prova offline).
 
@@ -40,9 +54,13 @@ Test: `OFFLINE=1 python -m pytest -q` (tutti verdi; `data/esempio-poo/` è di nu
 
 | Variabile | Default | A cosa serve |
 |---|---|---|
-| `OPENAI_API_KEY` | — | Senza questa chiave l'app gira offline |
-| `OPENAI_MODEL` | `gpt-6-luna` (il modello degli organizzatori) | Modello per tutte le chiamate di testo (JSON mode) |
-| `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | Embedding per il RAG |
+| `LLM_PROVIDER` | `openai` | `gemini`, `ollama`, `openai` o `custom` per la chat |
+| `LLM_MODEL` | dipende dal provider | Modello per tutte le chiamate di testo (JSON mode) |
+| `LLM_API_KEY` | — | Chiave del provider (oppure `GEMINI_API_KEY` / `OPENAI_API_KEY`). Senza chiave l'app gira offline, tranne con Ollama |
+| `LLM_BASE_URL` | dipende dal provider | Indirizzo dell'API compatibile con OpenAI |
+| `EMBED_PROVIDER` | uguale a `LLM_PROVIDER` | Provider degli embedding, anche `offline` |
+| `EMBED_MODEL`, `EMBED_API_KEY`, `EMBED_BASE_URL` | come la chat se il provider è lo stesso | Embedding per il RAG |
+| `RAG_MIN_SIM` | `0.25` | Soglia di pertinenza del RAG, tarata su OpenAI |
 | `OFFLINE` | — | Con `1` forza la modalità offline |
 | `CACHE_DIR` | `.cache` | Cache su disco delle risposte LLM e degli embedding |
 
@@ -61,7 +79,7 @@ Formati dei nomi d'esame riconosciuti per la data: `YYYY_MM_DD`, `YYYYMMDD`, `DD
 
 ## Modelli e librerie
 
-- **OpenAI** `gpt-6-luna` in JSON mode (`response_format=json_object`, temperatura 0.4, ripetuta senza temperatura se il modello la rifiuta) e `text-embedding-3-small`. Tutte le chiamate passano da `app/llm.py`.
+- **LLM compatibile con l'API OpenAI** in JSON mode (`response_format=json_object`, temperatura 0.4, ripetuta senza temperatura se il modello la rifiuta). All'hackathon `gpt-6-luna` e `text-embedding-3-small`, ora anche Gemini e Ollama (vedi "Provider LLM"). Tutte le chiamate passano da `app/llm.py`.
 - **Streamlit**: l'interfaccia.
 - **pypdf** e **PyMuPDF**: testo dai PDF, anteprime e PDF modificati. **python-pptx** e **python-docx**: lettura e riscrittura di PPTX e DOCX.
 - **NumPy** e **pandas**: similarità coseno del RAG e tabelle.
@@ -108,5 +126,5 @@ Si crea `data/<corso>/` con `slides/` ed `exams/` (PDF, PPTX, DOCX, MD o TXT). I
 
 - Le riscritture degli esercizi d'esame e le micro-modifiche alle slide sono buone solo quanto l'LLM. Offline si vedono solo i testi di riserva.
 - Offline la correzione delle survey conta le parole chiave della rubrica, quindi è approssimativa.
-- Senza chiave, il RAG offline (embedding a hash) a volte abbina slide poco pertinenti.
+- Senza provider, il RAG offline (embedding a hash) a volte abbina slide poco pertinenti.
 - I dati degli studenti sono sintetici: non abbiamo usato dati reali.
